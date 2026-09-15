@@ -8,7 +8,7 @@ SetBatchLines, -1
 SendMode Input
 SetWorkingDir %A_ScriptDir%
 
-global version := "v 1.6.1"
+global version := "v 1.6.2"
 global LicenseURL := "aHR0cHM6Ly9naXN0LmdpdGh1YnVzZXJjb250ZW50LmNvbS9NYWtzaW00ZWtrL2Jl`nMmQ0MjE5MzE1NjFkZDAxYjQzM2Y5M2NhNTMyOWQwL3Jhdy9WaU1lTGxZLWtleXMu`ndHh0"
 
 
@@ -264,6 +264,7 @@ checkUpdates() {
             BindHotkeys()
             
             if (scriptMode == "Admin") {
+                Sleep, 3000
                 SetTimer, adminsStatistics, -500
                 SetTimer, CountAdminActions, 500
                 SetTimer, punishHelper, 3000
@@ -352,51 +353,63 @@ scriptSettingsChecker() {
         FileAppend, %text%, %additionalFeaturesFile%, UTF-8
         ToolTip("[𝐒𝐂𝐑𝐈𝐏𝐓] Файл доп. скрипта создан.", 1700)
     } if (!FileExist(statisticFile) && userNickname != "ERROR" && adminStatsStatus && scriptMode == "Admin") {
-        IniRead, totalAns, %settingsFile%, %userNickname%, totalAns
-        IniRead, totalJails, %settingsFile%, %userNickname%, totalJails
-        IniWrite, %totalAns%, %statisticFile%, %today%, totalAns
-        IniWrite, %totalJails%, %statisticFile%, %today%, totalJails
+        if (FileExist(settingsFile)) {
+            adminName := Trim(Base64Encode(userNickname), " `t`r`n")
+
+            IniRead, totalAns, %settingsFile%, %adminName%, totalAns, 0
+            IniRead, totalJails, %settingsFile%, %adminName%, totalJails, 0
+    
+            IniWrite, %totalAns%, %statisticFile%, %today%, totalAns
+            IniWrite, %totalJails%, %statisticFile%, %today%, totalJails
+        }
     }
 }
 
 
 adminsStatistics() {
-    IniRead, userNickname, %settingsFile%, Preset, userNickname
-    IniRead, savedDate, %settingsFile%, %userNickname%, Date
-    IniRead, totalAns, %settingsFile%, %userNickname%, totalAns
-    IniRead, totalJails, %settingsFile%, %userNickname%, totalJails
-    adminName := Base64Decode(userNickname)
+    statsAdmin := Trim(userNickname, " `t`r`n")
+
+    IniRead, statsAdmin, %settingsFile%, Preset, userNickname
+    IniRead, savedDate, %settingsFile%, %statsAdmin%, Date
+    IniRead, totalAns, %settingsFile%, %statsAdmin%, totalAns
+    IniRead, totalJails, %settingsFile%, %statsAdmin%, totalJails
+    adminName := Base64Decode(statsAdmin)
     Sleep, 333
 
-    if ((userNickname != "" && userNickname != "ERROR") && savedDate != today) {
+    if ((statsAdmin != "" && statsAdmin != "ERROR") && savedDate != today && savedDate != "ERROR") {
         ToolTip, [𝐒𝐂𝐑𝐈𝐏𝐓] Дата предыдущей статистики: %savedDate% | Текущая: %today%`n↪︎ Сбрасываю статистику...
+        
         global today := A_DD . "." . A_MM . "." . A_YYYY
+
         IniWrite, %totalAns%, %statisticFile%, %savedDate%, totalAns
         IniWrite, %totalJails%, %statisticFile%, %savedDate%, totalJails
-        IniWrite, %today%, %settingsFile%, %userNickname%, Date
-        IniWrite, 0, %settingsFile%, %userNickname%, totalAns
-        IniWrite, 0, %settingsFile%, %userNickname%, totalJails
+        IniWrite, %today%, %settingsFile%, %statsAdmin%, Date
+
+        IniWrite, 0, %settingsFile%, %statsAdmin%, totalAns
+        IniWrite, 0, %settingsFile%, %statsAdmin%, totalJails
         IniDelete, %settingsFile%, ProcessedLines
+
         Sleep, 333
         ToolTip, [𝐒𝐂𝐑𝐈𝐏𝐓] Дата предыдущей статистики: %savedDate% | Текущая: %today%`n↪︎ Ваша статистика сброшена.
         Sleep, 777
         ToolTip
-    } else if (userNickname != "" && userNickname != "ERROR") {
+    } else if (statsAdmin != "" && statsAdmin != "ERROR") {
         ToolTip, [𝐒𝐂𝐑𝐈𝐏𝐓] Дата сохраненной статистики: %savedDate% | Текущая: %today%`n↪︎ Загружаю статистику...
         Sleep, 333
 
         if (totalAns = "" || totalAns = "ERROR") {
-            IniWrite, 0, %settingsFile%, %userNickname%, totalAns
+            IniWrite, 0, %settingsFile%, %statsAdmin%, totalAns
             ToolTip, [𝐒𝐂𝐑𝐈𝐏𝐓] Дата сохраненной статистики: %savedDate% | Текущая: %today%`n↪︎ Ошибка при загрузке pm'ок`, сбрасываю значения...
             Sleep, 1771
         } if (totalJails = "" || totalJails = "ERROR") {
-            IniWrite, 0, %settingsFile%, %userNickname%, totalJails
+            IniWrite, 0, %settingsFile%, %statsAdmin%, totalJails
             ToolTip, [𝐒𝐂𝐑𝐈𝐏𝐓] Дата сохраненной статистики: %savedDate% | Текущая: %today%`n↪︎ Ошибка при загрузке jail'ов`, сбрасываю значения...
             Sleep, 1771
         }
-        
-        IniRead, totalAns, %settingsFile%, %userNickname%, totalAns
-        IniRead, totalJails, %settingsFile%, %userNickname%, totalJails
+
+        IniRead, totalAns, %settingsFile%, %statsAdmin%, totalAns
+        IniRead, totalJails, %settingsFile%, %statsAdmin%, totalJails
+
         ToolTip, [𝐒𝐂𝐑𝐈𝐏𝐓] Дата сохраненной статистики: %savedDate% | Текущая: %today%`n↪︎ Статистика загружена. Текущие значения:`n`n★ Администратор %adminName% ⤵︎`n- ✉ Ответов: %totalAns% (/pm)`n- ⚖ Jail'ов: %totalJails% (/jail)
         Sleep, 777
         ToolTip
@@ -1489,16 +1502,25 @@ LoadHotkeys() {
 
 
 BindHotkeys() {
+    global previousHotkeys, hotkeys, settingsFile
+
     for action, oldKey in previousHotkeys {
         if (oldKey != "" && !(action = "Reply" || action = "")) {
             Hotkey, %oldKey%, Off
         }
     }
 
+    successLog := ""
     for action, newKey in hotkeys {
         if (newKey != "" && !(action = "Reply" || action = "")) {
-            Hotkey, %newKey%, %action%, On
-            previousHotkeys[action] := newKey
+            try {
+                Hotkey, %newKey%, %action%, On
+                previousHotkeys[action] := newKey
+                
+                successLog .= "Дія: " . action . " -> Клавіша: " . newKey . "`n"
+            } catch e {
+                continue
+            }
         }
     }
 
@@ -1940,7 +1962,6 @@ humanReplyFunc() {
     }
 }
 
-
 Watch:
     spTimersOff()
     Sleep, 50
@@ -2033,7 +2054,22 @@ Request:
 
         SendInput, ^a {BackSpace}
     } else if (lastRequest != "") {
-        SendInput, {F6}/z %lastRequest%{Enter}
+        if (isHumanInput) {
+            SendInput, {F6}/z{Space}
+            Sleep, %CMDDelay%
+
+            Loop, Parse, lastRequest
+            {
+                SendInput, %A_LoopField%
+                Random, rDelay1, %InputDelay1%, %InputDelay2%
+                Sleep, rDelay1
+            }
+
+            SendInput, {Enter}
+        } else {
+            SendInput, {F6}/z %lastRequest%{Enter}
+        }
+
         lastRequest++
     }
 Return
@@ -2058,9 +2094,11 @@ Return
 
 
 AdminStats:
+    userNickname := Trim(Base64Encode(userNickname), " `t`r`n")
+
     IniRead, totalAns, %settingsFile%, %userNickname%, totalAns
     IniRead, totalJails, %settingsFile%, %userNickname%, totalJails
-    
+        
     if ((totalAns != "ERROR" && totalJails != "ERROR") && (userNickname != "" || userNickname != "ERROR")) {
         adminName := Base64Decode(userNickname)
         ToolTip("★ Администратор " . adminName . " ⤵︎`n- ✉ Ответов: " . totalAns . " (/pm)`n- ⚖ Jail'ов: " . totalJails . " (/jail)", 3000)
