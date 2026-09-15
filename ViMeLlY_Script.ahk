@@ -226,7 +226,7 @@ checkUpdates() {
     } if (FileExist(scriptVersion)) {
         UrlDownloadToFile, https://raw.githubusercontent.com/Maksim4ekk/ViMeLlY-Script/refs/heads/main/ViMeLlYScript.ver, %scriptVersion%
         FileRead, serverVersion, %scriptVersion%
-        updateUrl := "https://raw.githubusercontent.com/Maksim4ekk/ViMeLlY-Script/refs/heads/main/ViMeLlY%20Script.exe"
+        updateUrl := "https://raw.githubusercontent.com/Maksim4ekk/ViMeLlY-Script/refs/heads/main/ViMeLlY_Script.exe"
         
         if (serverVersion != version) {
             ToolTip("[𝐒𝐂𝐑𝐈𝐏𝐓] Доступно обновление ViMeLlY Script (" . serverVersion . ")! Начинаю загрузку...", 1000)
