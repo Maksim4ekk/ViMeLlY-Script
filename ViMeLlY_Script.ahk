@@ -8,7 +8,7 @@ SetBatchLines, -1
 SendMode Input
 SetWorkingDir %A_ScriptDir%
 
-global version := "v 1.6.2"
+global version := "v 1.7.0"
 global LicenseURL := "aHR0cHM6Ly9naXN0LmdpdGh1YnVzZXJjb250ZW50LmNvbS9NYWtzaW00ZWtrL2Jl`nMmQ0MjE5MzE1NjFkZDAxYjQzM2Y5M2NhNTMyOWQwL3Jhdy9WaU1lTGxZLWtleXMu`ndHh0"
 
 
@@ -18,63 +18,70 @@ global previousHotkeys := {}
 global punishMap := {}
 global currentCmdKey := ""
 global ChatIsOpen := false
-global isHumanInput, reportLog, punishHelperStatus, autoIssueStatus, lastRequest, additionalFeaturesStatus, adminStatsStatus
-global active := 0
-global productCount := 0
+global isHumanInput, reportLog, punishHelperStatus, lastRequest, additionalFeaturesStatus, adminStatsStatus
+global autoEditActive := false
+global autoBizlistActive := false
 global currentSetup, CMDDelay, InputDelay1, InputDelay2, userNickname, guiColor, scriptType
 global scriptDir := A_MyDocuments . "\ViMeLlY Script\"
 global settingsFile := scriptDir . "settings.ini"
 global punishFile := scriptDir . "punish.txt"
-global autoIssueFile := scriptDir . "auto-issue.txt"
 global additionalFeaturesFile := scriptDir . "ViMeLlY-Features.ahk"
 global statisticFile := scriptDir . "statistic.ini"
-global scriptLogo1 := A_Temp . "\ViMeLlYScript_1.png"
-global scriptLogo2 := A_Temp . "\ViMeLlYScript_2.png"
-global scriptLogo3 := A_Temp . "\ViMeLlYScript_3.png"
-global scriptLogo4 := A_Temp . "\ViMeLlYScript_4.png"
-global scriptLogo5 := A_Temp . "\ViMeLlYScript_5.png"
 global scriptVersion := A_Temp . "\ViMeLlYScript.ver"
+global answerRulesFile := scriptDir . "answer-rules.txt"
+global answerMap := {}
+global answerRulesLoaded := false
+global automationQueue := []
+global automationBusy := false
+global automationLastSent := 0
 global answerComplaint, answerCommand, responses
 global filePath := FindChatlogPath()
 global lastReadLine := checkChatLog()
 global lastLineNum
+; Request: состояние своей последней /z, чтобы не править посторонние команды.
+global requestBusy := false
+global requestLastSent := ""
+global requestCanRecall := false
 global truckerSettings := false
 global scriptSettings := false
-global orderOneGo, isToolTipActive
+global isToolTipActive
 global today := A_DD . "." . A_MM . "." . A_YYYY
 
-SetTimer, checkUpdates, -50 ; ПРОВЕРКА ОБНОВЛЕНИЙ / ЛИЦЕНЗИИ
+; Инициализация выполняется один раз, НЕ зависит от GitHub или обновлений.
+SetTimer, InitializeViMeLlY, -50
 
 IniRead, scriptModeStatus, %settingsFile%, Preset, scriptMode
 global scriptMode := scriptModeStatus
 
 IniRead, userNickname, %settingsFile%, Preset, userNickname
 IniRead, rL, %settingsFile%, Preset, reportLog
-IniRead, aI, %settingsFile%, Preset, autoIssueStatus
 IniRead, pH, %settingsFile%, Preset, punishHelperStatus
 IniRead, aF, %settingsFile%, Preset, additionalFeaturesStatus
 IniRead, aS, %settingsFile%, Preset, adminStatsStatus
-IniRead, isToolTipActive, %settingsFile%, Preset, isToolTipActive
+IniRead, isToolTipActive, %settingsFile%, Preset, isToolTipActive, 1
+; Значение режима необходимо загрузить ДО построения GUI и обработки хоткеев.
+IniRead, isHumanInput, %settingsFile%, Preset, isHumanInput, 0
+isHumanInput := (isHumanInput = 1) ? 1 : 0
 
 ToolTip("[𝐒𝐂𝐑𝐈𝐏𝐓] Инициализация скрипта...", 300)
 
-reportLog := (rL == "") ? 0 : rL
-autoIssueStatus := (aI == "") ? 0 : aI
-punishHelperStatus := (pH == "") ? 0 : pH
-additionalFeaturesStatus := (aF == "") ? 0 : aF
-adminStatsStatus := (aS == "") ? 0 : aS
+reportLog := (rL = "1") ? 1 : 0
+punishHelperStatus := (pH = "1") ? 1 : 0
+additionalFeaturesStatus := (aF = "1") ? 1 : 0
+adminStatsStatus := (aS = "1") ? 1 : 0
 
-if (rL && rL != "ERROR") {
-    SetTimer, answerLogger, 500
-} if (aF && aF != "ERROR") {
-    global pid
-    Run, %additionalFeaturesFile%, , , pid
-}
+; Фонові модулі запускає InitializeViMeLlY після перевірки налаштувань.
+; У цьому блоці навмисно немає таймерів чи запуску дочірніх процесів.
 
 Sleep, 300
 ToolTip("[𝐒𝐂𝐑𝐈𝐏𝐓] ViMeLlY Script (" . version . ") загружен. Приятного пользования!", 777)
 
 Stub:
+Return
+
+; ДИАГНОСТИКА: Ctrl+Shift+F10 — состояние репортов. Ничего не отправляет серверу.
+^+F10::
+    ReportDiagnostics()
 Return
 
 ; ============================================================================================================================
@@ -85,6 +92,42 @@ Return
 global CurrentHWID := ""
 global EnteredKey  := ""
 
+; === InitializeViMeLlY: единоразовый запуск независимо от автообновления ===
+InitializeViMeLlY() {
+    global scriptMode, scriptType, isHumanInput, reportLog, additionalFeaturesStatus
+    global additionalFeaturesFile, pid, settingsFile
+    global punishHelperStatus, punishFile
+    ; Не выполнять повторную проверку Gist каждые 500 миллисекунд.
+    scriptSettingsChecker()
+    IniRead, savedScriptMode, %settingsFile%, Preset, scriptMode, %scriptType%
+    scriptMode := (savedScriptMode = "Admin" || savedScriptMode = "Player") ? savedScriptMode : scriptType
+    IniRead, inputMode, %settingsFile%, Preset, isHumanInput, 0
+    isHumanInput := (inputMode = 1) ? 1 : 0
+
+    ; Подгрузить карту ответов ПОСЛЕ создания каталога и файла конфигурации.
+    LoadAnswerRules()
+    ChatlogWatchFromNow("reports")
+    ChatlogWatchFromNow("profit")
+    LoadHotkeys()
+    BindHotkeys()
+    if (scriptMode = "Admin") {
+        if (reportLog)
+            SetTimer, answerLogger, 500
+        adminsStatistics()
+        SetTimer, adminsStatistics, 60000
+        SetTimer, CountAdminActions, 500
+        if (punishHelperStatus && FileExist(punishFile))
+            SetTimer, punishHelper, -1500
+    } else if (scriptMode = "Player") {
+        SetTimer, ExpectationOfProfit, 333
+    }
+    if (additionalFeaturesStatus && FileExist(additionalFeaturesFile))
+        Run, %additionalFeaturesFile%, , , pid
+    ; Отдельный одноразовый таймер: отказ GitHub никак не блокирует интерфейс/бинды.
+    SetTimer, checkUpdates, -1200
+}
+
+; === GetHWID: служебная функция ===
 GetHWID() {
     try {
         for obj in ComObjGet("winmgmts:").ExecQuery("Select ProcessorId from Win32_Processor")
@@ -97,6 +140,7 @@ GetHWID() {
     }
 }
 
+; === checkLicenseKey: проверка ключа через Gist ===
 checkLicenseKey() {
     global CurrentHWID, EnteredKey, scriptType, userNickname, LicenseURL
 
@@ -136,75 +180,44 @@ checkLicenseKey() {
         }
     }
     
-    RawKeys := ""
-    
-    ; Способ 1: WinHttpRequest с явным включением TLS 1.2 (2048) и обходом ошибок SSL
-    try {
-        whr := ComObjCreate("WinHttp.WinHttpRequest.5.1")
-        whr.Option(9) := 2048  ; Принудительный TLS 1.2
-        whr.Option(4) := 13056 ; Игнорировать ошибки сертификата
-        whr.SetTimeouts(5000, 5000, 5000, 5000)
-        whr.Open("GET", license . "?nocache=" . A_Now . A_MSec, false)
-        whr.SetRequestHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
-        whr.Send()
-        if (whr.Status = 200)
-            RawKeys := whr.ResponseText
-    } catch e {
-        MsgBox, 16, Помилка, % "Сталася помилка!`nПовідомлення: " . e.Message
-    }
-    
-    ; Способ 2: Резервный метод через ServerXMLHTTP, если WinHttp сбоит
+    ; Лицензия Gist: сертификат обязателен, отсутствие сети != неверный ключ.
+    RawKeys := SecureHttpText(license)
     if (RawKeys = "") {
-        try {
-            xml := ComObjCreate("Msxml2.ServerXMLHTTP.6.0")
-            xml.open("GET", license . "?nocache=" . A_Now . A_MSec, false)
-            xml.setRequestHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
-            xml.send()
-            if (xml.status = 200)
-                RawKeys := xml.responseText
-        } catch e {
-            MsgBox, 16, Помилка, % "Сталася помилка!`nПовідомлення: " . e.Message
-        }
-    }
-    
-    if (RawKeys = "") {
-        MsgBox, 16, Ошибка сети, Не удалось связаться с сервером проверки ключей.
+        MsgBox, 16, Ошибка сети, Сервер лицензий недоступен или TLS не прошёл проверку.`nПроверьте интернет и системное время. Ключ не удалён.
         ExitApp
     }
-    
     IsValid := false
+    scriptType := ""
     Loop, Parse, RawKeys, `n, `r
     {
         CurrentLine := Trim(A_LoopField)
-        if (CurrentLine = "")
+        if (CurrentLine = "" || SubStr(CurrentLine, 1, 1) = "#")
             continue
-        
         Parts := StrSplit(CurrentLine, [":", "="])
-        userNickname  := Trim(Parts[1])
-        scriptType  := Trim(Parts[2])
+        if (Parts.Length() < 3)
+            continue
+        candidate := Trim(Parts[1])
+        candidateType := Trim(Parts[2])
         HwidFromList := Trim(Parts[3])
-        
-        if (userNickname = SavedKey && HwidFromList = CurrentHWID) {
+        if (candidate = SavedKey && HwidFromList == CurrentHWID && (candidateType == "Admin" || candidateType == "Player")) {
             IsValid := true
+            userNickname := Trim(Base64Encode(candidate), " `t`r`n")
+            scriptType := candidateType
             break
         }
     }
-    
     if (IsValid) {
         IniWrite, %SavedKey%, %settingsFile%, License, Key
-    } else {
-        IniRead, scriptModeStatus, %settingsFile%, Preset, scriptMode
-
-        if FileExist(settingsFile) {
-            IniDelete, %settingsFile%, License, Key
-            IniDelete, %settingsFile%, License
-        } if (scriptModeStatus != scriptType) {
-            MsgBox, 16, Ошибка инициализации, Возник конфликт версий скрипта.
-            Reload
+        IniRead, storedMode, %settingsFile%, Preset, scriptMode, %A_Space%
+        storedMode := Trim(storedMode)
+        if (storedMode != "" && storedMode != scriptType) {
+            MsgBox, 16, Ошибка лицензии, Указанный режим не соответствует ключу.`nПроверьте настройки с разработчиком.
+            ExitApp
         }
-
-        MsgBox, 16, Ошибка активации, % "Введен недействительный ключ."
-        Reload
+    } else {
+        ; Нет циклического Reload и очистки файла настроек при проблемах активации.
+        MsgBox, 16, Ошибка активации, Ключ или HWID отсутствует в списке лицензий.
+        ExitApp
     }
 }
 
@@ -220,82 +233,160 @@ return
 ; ============================================================================================================================
 ; ============================================================================================================================
 
+; ============================================================================================================================
+; #region || БЕЗОПАСНОЕ ОБНОВЛЕНИЕ (только скомпилированный EXE)
+; Ошибка сети не блокирует запуск. Установка требует подтверждения.
+; === checkUpdates: обновление только EXE ===
 checkUpdates() {
-    if (!FileExist(scriptVersion)) {
-        UrlDownloadToFile, https://raw.githubusercontent.com/Maksim4ekk/ViMeLlY-Script/refs/heads/main/ViMeLlYScript.ver, %scriptVersion%
-    } if (FileExist(scriptVersion)) {
-        UrlDownloadToFile, https://raw.githubusercontent.com/Maksim4ekk/ViMeLlY-Script/refs/heads/main/ViMeLlYScript.ver, %scriptVersion%
-        FileRead, serverVersion, %scriptVersion%
-        updateUrl := "https://raw.githubusercontent.com/Maksim4ekk/ViMeLlY-Script/refs/heads/main/ViMeLlY_Script.exe"
-        
-        if (serverVersion != version) {
-            ToolTip("[𝐒𝐂𝐑𝐈𝐏𝐓] Доступно обновление ViMeLlY Script (" . serverVersion . ")! Начинаю загрузку...", 1000)
-            UrlDownloadToFile, %updateUrl%, %A_Temp%\ViMeLlY Script.exe
-            updater := A_Temp "\update.ahk"
-            FileDelete, %updater%
-            FileAppend,
-                        (
-                        Sleep, 1000
-                        Loop {
-                            FileMove, %A_Temp%\ViMeLlY Script.exe, %A_ScriptFullPath%, 1
-                            if !ErrorLevel
-                                break
-                            Sleep, 500
-                        }
-                        Run, "%A_ScriptFullPath%"
-                        ExitApp
-            ), %updater%, UTF-8
-
-            Run, "%A_AhkPath%" "%updater%"
-            FileDelete, %scriptVersion%
-            FileDelete, %settingsFile%
-            ExitApp
+    global scriptVersion, version, settingsFile, scriptMode, scriptDir
+    remoteVersionUrl := "https://raw.githubusercontent.com/Maksim4ekk/ViMeLlY-Script/refs/heads/main/ViMeLlYScript.ver"
+    remoteExeUrl := "https://raw.githubusercontent.com/Maksim4ekk/ViMeLlY-Script/refs/heads/main/ViMeLlY_Script.exe"
+    text := SecureHttpText(remoteVersionUrl)
+    serverVersion := LTrim(Trim(text, " `t`r`n"), Chr(0xFEFF))
+    if (text = "") {
+        FileAppend, %A_Now% | Version check failed: cannot reach GitHub (or TLS error).`r`n, %scriptDir%updater.log, UTF-8
+        return false
+    }
+    FileAppend, % A_Now . " | local=" . version . " remote=" . serverVersion . "`r`n", %scriptDir%updater.log, UTF-8
+    if (!RegExMatch(serverVersion, "i)^v?\s*\d+\.\d+\.\d+$")) {
+        FileAppend, %A_Now% | Invalid .ver format; update skipped.`r`n, %scriptDir%updater.log, UTF-8
+        return false
+    }
+    if (VersionNewer(serverVersion, version)) {
+        if (!A_IsCompiled) {
+            MsgBox, 64, ViMeLlY Script, % "Найдена версия " . serverVersion . ". Обновления EXE отключены для исходного .ahk."
         } else {
-            if (FileExist(A_Temp . "\update.ahk")) {
-                FileDelete, %A_Temp%\update.ahk
-            } if (FileExist(A_Temp . "\ViMeLlYScript.ver")) {
-                FileDelete, %A_Temp%\ViMeLlYScript.ver
-            }
-
-            SetTimer, scriptSettingsChecker, 500
-
-            LoadHotkeys()
-            Sleep, 1000
-            BindHotkeys()
-            
-            if (scriptMode == "Admin") {
-                Sleep, 3000
-                SetTimer, adminsStatistics, -500
-                SetTimer, CountAdminActions, 500
-                SetTimer, punishHelper, 3000
-            } else if (scriptMode == "Player") {
-                IniRead, orderOneGo, %settingsFile%, Preset, orderOneGo
-                orderOneGo := orderOneGo
-                SetTimer, ExpectationOfProfit, 333
-            }
+            MsgBox, 36, ViMeLlY Script, % "Доступна новая версия " . serverVersion . ". Загрузить и установить после закрытия скрипта?`nФайл settings.ini не будет удалён."
+            IfMsgBox, Yes
+                SecureInstallUpdate(remoteExeUrl)
         }
     }
+
+    ; Проверка обновлений никак не управляет запуском игры или хоткеев.
+    return
 }
 
+; Строгая HTTPS-проверка сертификата. Никаких WinHttpRequestOption_SslErrorIgnoreFlags.
+; === SecureHttpText: служебная функция ===
+SecureHttpText(url) {
+    if (!RegExMatch(url, "i)^https://"))
+        return ""
+    try {
+        req := ComObjCreate("WinHttp.WinHttpRequest.5.1")
+        req.Option(9) := 2048
+        req.SetTimeouts(4000, 4000, 4000, 6000)
+        req.Open("GET", url . "?t=" . A_NowUTC, false)
+        req.SetRequestHeader("User-Agent", "ViMeLlY-Script")
+        req.Send()
+        if (req.Status == 200)
+            return req.ResponseText
+    } catch e {
+        return ""
+    }
+    return ""
+}
 
+; === VersionNewer: служебная функция ===
+VersionNewer(remote, local) {
+    remote := RegExReplace(remote, "i)^v\s*")
+    local := RegExReplace(local, "i)^v\s*")
+    a := StrSplit(remote, ".")
+    b := StrSplit(local, ".")
+    if (a.Length() != 3 || b.Length() != 3)
+        return false
+    Loop, 3 {
+        if ((a[A_Index] + 0) > (b[A_Index] + 0))
+            return true
+        if ((a[A_Index] + 0) < (b[A_Index] + 0))
+            return false
+    }
+    return false
+}
+
+; === SecureInstallUpdate: служебная функция ===
+SecureInstallUpdate(url) {
+    if (!A_IsCompiled || !RegExMatch(url, "i)^https://"))
+        return false
+    target := A_ScriptFullPath
+    download := A_Temp . "\ViMeLlY_Update_" . A_TickCount . ".exe"
+    helper := A_Temp . "\ViMeLlY_Update_" . A_TickCount . ".ps1"
+    backup := target . ".bak"
+    try {
+        req := ComObjCreate("WinHttp.WinHttpRequest.5.1")
+        req.Option(9) := 2048
+        req.SetTimeouts(5000, 5000, 12000, 15000)
+        req.Open("GET", url, false)
+        req.Send()
+        if (req.Status != 200)
+            throw Exception("HTTP " . req.Status)
+        stream := ComObjCreate("ADODB.Stream")
+        stream.Type := 1
+        stream.Open()
+        stream.Write(req.ResponseBody)
+        stream.SaveToFile(download, 2)
+        stream.Close()
+        FileGetSize, bytes, %download%
+        f := FileOpen(download, "r")
+        if (!IsObject(f) || bytes < 40000 || f.ReadUShort() != 0x5A4D)
+            throw Exception("Файл обновления не является допустимым EXE")
+        f.Close()
+    } catch e {
+        FileDelete, %download%
+        MsgBox, 16, ViMeLlY Script, % "Ошибка загрузки: " . e.Message
+        return false
+    }
+    ; Файл PowerShell создаётся самим скриптом в %TEMP%, выполняется после выхода EXE.
+    ps =
+    (
+param([string]$Target, [string]$Download, [string]$Backup)
+Start-Sleep -Seconds 2
+$ok = $false
+for ($i=0; $i -lt 20; $i++) {
+    try {
+        if (Test-Path -LiteralPath $Backup) { Remove-Item -LiteralPath $Backup -Force }
+        Move-Item -LiteralPath $Target -Destination $Backup -Force -ErrorAction Stop
+        try {
+            Move-Item -LiteralPath $Download -Destination $Target -Force -ErrorAction Stop
+            $ok = $true
+        } catch {
+            Move-Item -LiteralPath $Backup -Destination $Target -Force -ErrorAction SilentlyContinue
+        }
+        break
+    } catch { Start-Sleep -Milliseconds 500 }
+}
+if ($ok) { Start-Process -FilePath $Target }
+else { if (Test-Path -LiteralPath $Target) { Start-Process -FilePath $Target } }
+    )
+    FileDelete, %helper%
+    FileAppend, %ps%, %helper%, UTF-8
+    if (ErrorLevel) {
+        MsgBox, 16, ViMeLlY Script, Не удалось создать служебный файл обновления.
+        return false
+    }
+    args := "-NoProfile -ExecutionPolicy Bypass -File """ . helper . """ -Target """ . target . """ -Download """ . download . """ -Backup """ . backup . """"
+    Run, % "powershell.exe " . args, , Hide, updaterPid
+    if (ErrorLevel || !updaterPid) {
+        MsgBox, 16, ViMeLlY Script, Не удалось запустить установщик обновлений.
+        return false
+    }
+    ExitApp
+}
+
+; === scriptSettingsChecker: служебная функция ===
 scriptSettingsChecker() {
-    if (!FileExist(scriptLogo1) || !FileExist(scriptLogo2) || !FileExist(scriptLogo3) || !FileExist(scriptLogo4) || !FileExist(scriptLogo5) ) {
-        UrlDownloadToFile, https://drive.usercontent.google.com/download?id=1IRUsSOw92CPi7Olkuq3pP13kgQzxfczu&export=download&authuser=0&confirm=t&uuid=d232d00d-d535-4dc5-88e4-e08429256637&at=AN8xHopR-PLqyZs8yJ1OtbBRXRSn:1758379704317, %A_Temp%\ViMeLlYScript_1.png
-        UrlDownloadToFile, https://drive.usercontent.google.com/download?id=1px54qZCf4zw7SXOGNvzFme4OTFmnP_TQ&export=download&authuser=0&confirm=t&uuid=a591b692-7d58-4220-97a0-47870f1d954e&at=AN8xHoqO47w_bnM5MXEbxR6_O1-w:1758379699137, %A_Temp%\ViMeLlYScript_2.png
-        UrlDownloadToFile, https://drive.usercontent.google.com/download?id=1PnUALVxeETh2Zwt6lo_OACkTR5ipbafi&export=download&authuser=0&confirm=t&uuid=94c272fa-a6b1-4010-93d5-d7641eb60f1a&at=AN8xHooLAWKRoLQtdnZgr-ZVRy04:1758379692936, %A_Temp%\ViMeLlYScript_3.png
-        UrlDownloadToFile, https://drive.usercontent.google.com/download?id=1FVUiGqg-8MQ2BE4XI4XOttUreelogqiR&export=download&authuser=0&confirm=t&uuid=035df7bc-4301-4210-8d9e-032968bff93c&at=AN8xHoqDku86yg8xr3NlBkKMxGUR:1758379686118, %A_Temp%\ViMeLlYScript_4.png
-        UrlDownloadToFile, https://drive.usercontent.google.com/download?id=1JgvrXuyC3e3yyXJ9L0W8X3q9nlekN6j1&export=download&authuser=0&confirm=t&uuid=909d92a5-838f-462e-8d91-703d94ad79c4&at=AN8xHopXUr5z4lqeghnhxd7mbCom:1758379671208, %A_Temp%\ViMeLlYScript_5.png
-    } if (!FileExist(scriptDir)) {
+    ; Загрузка внешних изображений отключена: оригинальная компоновка GUI без Picture.
+    if (!FileExist(scriptDir)) {
         FileCreateDir, %scriptDir%
     } if (!FileExist(settingsFile)) {     
         checkLicenseKey() ; ПРОВЕРКА ЛИЦЕНЗИИ
 
         IniWrite, F2, %settingsFile%, Keys, Menu
-        IniWrite, %scriptType%, %settingsFile%, Preset, scriptMode
+        scriptMode := scriptType
+        IniWrite, %scriptMode%, %settingsFile%, Preset, scriptMode
         IniWrite, 0, %settingsFile%, Preset, isHumanInput
         IniWrite, 1, %settingsFile%, Preset, isToolTipActive
 
-        userNickname := Base64Encode(userNickname)
+        ; checkLicenseKey() уже сохранил userNickname в Base64.
         IniWrite, %userNickname%, %settingsFile%, Preset, userNickname
 
         if (scriptMode == "Admin") {
@@ -305,14 +396,12 @@ scriptSettingsChecker() {
             IniWrite, %A_Space%, %settingsFile%, Keys, humanReply
             IniWrite, F10, %settingsFile%, Keys, AdminStats
             IniWrite, %A_Space%, %settingsFile%, Keys, CopyAChat
-            IniWrite, %A_Space%, %settingsFile%, Keys, autoIssue
-
+            
             IniWrite, Быстро, %settingsFile%, Preset, currentSetup
             IniWrite, 0, %settingsFile%, Preset, reportLog
-            IniWrite, 0, %settingsFile%, Preset, autoIssueStatus
-            IniWrite, 0, %settingsFile%, Preset, punishHelperStatus
+                        IniWrite, 0, %settingsFile%, Preset, punishHelperStatus
             IniWrite, 0, %settingsFile%, Preset, additionalFeaturesStatus
-            IniWrite, 1, %settingsFile%, Preset, adiminStatsStatus
+            IniWrite, 1, %settingsFile%, Preset, adminStatsStatus
 
             ; === Answers
             IniWrite, Здравствуйте`, начал работу., %settingsFile%, Answers, Spectate
@@ -330,7 +419,6 @@ scriptSettingsChecker() {
         } else if (scriptMode == "Player") {
             IniWrite, %A_Space%, %settingsFile%, Keys, autoEdit
             IniWrite, %A_Space%, %settingsFile%, Keys, autoBizlist
-            IniWrite, 0, %settingsFile%, Preset, orderOneGo
         }
 
         IniWrite, %A_Space%, %settingsFile%, Keys, EmergencyDelete
@@ -340,83 +428,158 @@ scriptSettingsChecker() {
         checkLicenseKey() ; ПРОВЕРКА ЛИЦЕНЗИИ
     }
     
+    ; Создание базы ответов работает и из .ahk, и из единого .exe.
+    if (!LoadAnswerRules())
+        ToolTip("[SCRIPT] Не удалось открыть answer-rules.txt в Документах.", 3600)
+
     if (!FileExist(punishFile) && punishHelperStatus && scriptMode == "Admin") {
         text := "# Тут можно добавлять/удалять/изменять виды наказаний`n# Формат: /команда = /командаНаказания Время Причина`n# Пример: /epp = /jail 60 Езда по полям`n`n"
         FileAppend, %text%, %punishFile%, UTF-8
         ToolTip("[𝐒𝐂𝐑𝐈𝐏𝐓] Файл скрипта наказаний создан.", 1700)
-    } if (!FileExist(autoIssueFile) && autoIssueStatus && scriptMode == "Admin") {
-        text := "# Тут можно вставить список наказаний, которые нужно выдать в игре. `n# Пример: /offjail Nick_Name 120 Жалоба на игрока 1`n`n"
-        FileAppend, %text%, %autoIssueFile%, UTF-8
-        ToolTip("[𝐒𝐂𝐑𝐈𝐏𝐓] Файл авто-выдачи создан.", 1700)
     } if (!FileExist(additionalFeaturesFile) && additionalFeaturesStatus) {
         text := "#SingleInstance`, Force `; Позволяет запускать лишь 1 скрипт одновременно `n#Persistent `; Оставляет скрипт работающим на постоянной основе.`n#NoEnv `; - Отключает автоматическое наследование переменных окружения Windows.`n#NoTrayIcon `; - Скрывает значок скрипта в системном трее. `n`nSetTitleMatchMode, 2 `; - Устанавливает режим поиска окон по заголовку.`nSetBatchLines, -1 `; - Устанавливает максимальную производительность.`nSendMode Input `; - Устанавливает режим отправки клавиш.`n`n`; === Ваш скрипт`n`n`n`n;================================================================================================================================================="
         FileAppend, %text%, %additionalFeaturesFile%, UTF-8
         ToolTip("[𝐒𝐂𝐑𝐈𝐏𝐓] Файл доп. скрипта создан.", 1700)
     } if (!FileExist(statisticFile) && userNickname != "ERROR" && adminStatsStatus && scriptMode == "Admin") {
         if (FileExist(settingsFile)) {
-            adminName := Trim(Base64Encode(userNickname), " `t`r`n")
+            adminName := userNickname
 
             IniRead, totalAns, %settingsFile%, %adminName%, totalAns, 0
             IniRead, totalJails, %settingsFile%, %adminName%, totalJails, 0
     
-            IniWrite, %totalAns%, %statisticFile%, %today%, totalAns
-            IniWrite, %totalJails%, %statisticFile%, %today%, totalJails
+            initialStatsDate := StatsToday()
+            IniWrite, %totalAns%, %statisticFile%, %initialStatsDate%, totalAns
+            IniWrite, %totalJails%, %statisticFile%, %initialStatsDate%, totalJails
         }
     }
 }
 
 
+; === StatsToday: актуальная календарная дата, не кэшируется с момента запуска ===
+StatsToday() {
+    FormatTime, dateText,, dd.MM.yyyy
+    return dateText
+}
+
+; === StatsIsDate: запрещает [ERROR] и любые не-даты в statistic.ini ===
+StatsIsDate(value) {
+    return RegExMatch(Trim(value), "^(0[1-9]|[12][0-9]|3[01])\.(0[1-9]|1[0-2])\.[0-9]{4}$") != 0
+}
+
+; === StatsNumber: обрабатывает пустые/ошибочные счетчики без записи слова ERROR ===
+StatsNumber(value) {
+    value := Trim(value)
+    return RegExMatch(value, "^-?[0-9]+$") ? (value + 0) : 0
+}
+
+; === StatsArchiveDay: архивирует только дату, проверяя запись перед обнулением ===
+StatsArchiveDay(day, answerCount, jailCount) {
+    global statisticFile
+    if (!StatsIsDate(day))
+        return false
+
+    ; Однократная копия старого архива (никогда не перезаписывается).
+    if (FileExist(statisticFile) && !FileExist(statisticFile . ".bak")) {
+        savedCopy := statisticFile . ".bak"
+        FileCopy, %statisticFile%, %savedCopy%, 0
+        if (ErrorLevel)
+            return false
+    }
+
+    answerCount := StatsNumber(answerCount)
+    jailCount := StatsNumber(jailCount)
+    IniWrite, %answerCount%, %statisticFile%, %day%, totalAns
+    if (ErrorLevel)
+        return false
+    IniWrite, %jailCount%, %statisticFile%, %day%, totalJails
+    if (ErrorLevel)
+        return false
+    return true
+}
+
+; === adminsStatistics: корректная инициализация даты и переход между днями ===
 adminsStatistics() {
-    statsAdmin := Trim(userNickname, " `t`r`n")
+    global settingsFile, statisticFile, userNickname, today
 
-    IniRead, statsAdmin, %settingsFile%, Preset, userNickname
-    IniRead, savedDate, %settingsFile%, %statsAdmin%, Date
-    IniRead, totalAns, %settingsFile%, %statsAdmin%, totalAns
-    IniRead, totalJails, %settingsFile%, %statsAdmin%, totalJails
-    adminName := Base64Decode(statsAdmin)
-    Sleep, 333
+    IniRead, statsAdmin, %settingsFile%, Preset, userNickname, %A_Space%
+    statsAdmin := Trim(statsAdmin)
+    if (statsAdmin = "" || statsAdmin = "ERROR")
+        return false
 
-    if ((statsAdmin != "" && statsAdmin != "ERROR") && savedDate != today && savedDate != "ERROR") {
-        ToolTip, [𝐒𝐂𝐑𝐈𝐏𝐓] Дата предыдущей статистики: %savedDate% | Текущая: %today%`n↪︎ Сбрасываю статистику...
-        
-        global today := A_DD . "." . A_MM . "." . A_YYYY
+    currentDate := StatsToday()
+    IniRead, savedDate, %settingsFile%, %statsAdmin%, Date, %A_Space%
+    savedDate := Trim(savedDate)
+    IniRead, totalAns, %settingsFile%, %statsAdmin%, totalAns, 0
+    IniRead, totalJails, %settingsFile%, %statsAdmin%, totalJails, 0
+    totalAns := StatsNumber(totalAns)
+    totalJails := StatsNumber(totalJails)
 
-        IniWrite, %totalAns%, %statisticFile%, %savedDate%, totalAns
-        IniWrite, %totalJails%, %statisticFile%, %savedDate%, totalJails
-        IniWrite, %today%, %settingsFile%, %statsAdmin%, Date
+    ; При первом запуске создаем Date, НЕ списывая уже накопленные счетчики.
+    ; Старую секцию [ERROR] намеренно не переносим: ее дата неизвестна.
+    if (!StatsIsDate(savedDate)) {
+        IniWrite, %currentDate%, %settingsFile%, %statsAdmin%, Date
+        if (ErrorLevel)
+            return false
+        today := currentDate
+        return true
+    }
 
+    if (savedDate != currentDate) {
+        if (!StatsArchiveDay(savedDate, totalAns, totalJails))
+            return false
+
+        ; Сперва устанавливаем новую дату, затем сбрасываем счетчики.
+        IniWrite, %currentDate%, %settingsFile%, %statsAdmin%, Date
+        if (ErrorLevel)
+            return false
         IniWrite, 0, %settingsFile%, %statsAdmin%, totalAns
         IniWrite, 0, %settingsFile%, %statsAdmin%, totalJails
         IniDelete, %settingsFile%, ProcessedLines
-
-        Sleep, 333
-        ToolTip, [𝐒𝐂𝐑𝐈𝐏𝐓] Дата предыдущей статистики: %savedDate% | Текущая: %today%`n↪︎ Ваша статистика сброшена.
-        Sleep, 777
-        ToolTip
-    } else if (statsAdmin != "" && statsAdmin != "ERROR") {
-        ToolTip, [𝐒𝐂𝐑𝐈𝐏𝐓] Дата сохраненной статистики: %savedDate% | Текущая: %today%`n↪︎ Загружаю статистику...
-        Sleep, 333
-
-        if (totalAns = "" || totalAns = "ERROR") {
-            IniWrite, 0, %settingsFile%, %statsAdmin%, totalAns
-            ToolTip, [𝐒𝐂𝐑𝐈𝐏𝐓] Дата сохраненной статистики: %savedDate% | Текущая: %today%`n↪︎ Ошибка при загрузке pm'ок`, сбрасываю значения...
-            Sleep, 1771
-        } if (totalJails = "" || totalJails = "ERROR") {
-            IniWrite, 0, %settingsFile%, %statsAdmin%, totalJails
-            ToolTip, [𝐒𝐂𝐑𝐈𝐏𝐓] Дата сохраненной статистики: %savedDate% | Текущая: %today%`n↪︎ Ошибка при загрузке jail'ов`, сбрасываю значения...
-            Sleep, 1771
-        }
-
-        IniRead, totalAns, %settingsFile%, %statsAdmin%, totalAns
-        IniRead, totalJails, %settingsFile%, %statsAdmin%, totalJails
-
-        ToolTip, [𝐒𝐂𝐑𝐈𝐏𝐓] Дата сохраненной статистики: %savedDate% | Текущая: %today%`n↪︎ Статистика загружена. Текущие значения:`n`n★ Администратор %adminName% ⤵︎`n- ✉ Ответов: %totalAns% (/pm)`n- ⚖ Jail'ов: %totalJails% (/jail)
-        Sleep, 777
-        ToolTip
     }
+
+    today := currentDate
+    return true
 }
 
+; === StatsListDays: только корректные даты по порядку, без [ERROR] ===
+StatsListDays() {
+    global statisticFile
+    dates := []
+    if (!FileExist(statisticFile))
+        return dates
+    IniRead, sections, %statisticFile%
+    if (sections = "ERROR")
+        return dates
 
+    Loop, Parse, sections, `n, `r
+    {
+        day := Trim(A_LoopField)
+        if (StatsIsDate(day))
+            dates.Push(day)
+    }
+
+    count := dates.Length()
+    if (count < 2)
+        return dates
+    Loop, %count%
+    {
+        Loop, % count - 1
+        {
+            idx := A_Index
+            a := dates[idx]
+            b := dates[idx + 1]
+            keyA := SubStr(a, 7, 4) . SubStr(a, 4, 2) . SubStr(a, 1, 2)
+            keyB := SubStr(b, 7, 4) . SubStr(b, 4, 2) . SubStr(b, 1, 2)
+            if (keyA > keyB) {
+                dates[idx] := b
+                dates[idx + 1] := a
+            }
+        }
+    }
+    return dates
+}
+
+; === guiColorFunc: служебная функция ===
 guiColorFunc() {
     Random, randomLogo, 1, 5
 
@@ -442,15 +605,13 @@ guiColorFunc() {
 
 
 Menu:
-    randomLogo := guiColorFunc()
+    guiColorFunc()
     ansLogStatus := reportLog ? "✔ Лог жалоб" : "✘ Лог жалоб"
     aspStatus := isHumanInput ? "Имитация ручного ввода ☺" : "Автоматический ♛"
-    autoIssueSwitch := autoIssueStatus ? "✔ Автовыдача" : "✘ Автовыдача"
     punishHelperSwitch := punishHelperStatus ? "✔ Умные наказания" : "✘ Умные наказания"
     additionalFeaturesSwitch := additionalFeaturesStatus ? "✔ Доп. возможности " : "✘ Доп. возможности "
     adminStatsSwitch := adminStatsStatus ? "✔" : "✘"
 
-    IniRead, orderOneGo, %settingsFile%, Preset, orderOneGo
 
     Gui, ViMeLlY:New,, ViMeLlY Script
     Gui, ViMeLlY:New, +AlwaysOnTop -Caption +ToolWindow
@@ -474,22 +635,21 @@ Menu:
         } else {
             Gui, ViMeLlY:Add, Checkbox, x50 y+1 w330 vIsHumanInputV gIsHumanInputCheckBox, Иммитация ручного ввода команд
         } if (isToolTipActive) {
-            Gui, ViMeLlY:Add, Checkbox, x50 y+1 w330 Checked vIsToolTipActiveV gIsToolTipActiveCheckBox, Игнорирование подсказок скрипта
+            Gui, ViMeLlY:Add, Checkbox, x50 y+1 w330 Checked vIsToolTipActiveV gIsToolTipActiveCheckBox, Всплывающие подсказки скрипта
         } else {
-            Gui, ViMeLlY:Add, Checkbox, x50 y+1 w330 vIsToolTipActiveV gIsToolTipActiveCheckBox, Игнорирование подсказок скрипта
+            Gui, ViMeLlY:Add, Checkbox, x50 y+1 w330 vIsToolTipActiveV gIsToolTipActiveCheckBox, Всплывающие подсказки скрипта
         }
     }
 
     Gui, ViMeLlY:Font, s7, Comic Sans MS
     if (scriptMode == "Admin") {
-        Gui, ViMeLlY:Add, Button, xm y+1 w80 gOpenAutoIssue, 👁️ Автовыдача
-        Gui, ViMeLlY:Add, Button, x+0.5 yp gAnswers w120,⚙️ Настройки ответов྾
-        Gui, ViMeLlY:Add, Button, x+1 yp w130 gOpenPunishHelper, 👁️ Помощник наказаний
-        Gui, ViMeLlY:Add, Button, x+1 yp w49 gOpenAdditionalFeatures, 👁️ Доп.
-        Gui, ViMeLlY:Add, Button, x17 y+1 w75 gReportLog_ToggleStatus vStatusLogButton, %ansLogStatus%
-        Gui, ViMeLlY:Add, Button, x+1 yp w80 gAutoIssue_ToggleStatus vAutoIssueButton, %autoIssueSwitch%
-        Gui, ViMeLlY:Add, Button, x+1 yp w111 gPunishHelper_ToggleStatus vPunishHelperButton, %punishHelperSwitch%
-        Gui, ViMeLlY:Add, Button, x+1 yp w112 gAdditionalFeatures_ToggleStatus vAdditionalFeaturesButton, %additionalFeaturesSwitch%
+        ; Удалён экспериментальный массовый модуль; остальное меню сохранено.
+        Gui, ViMeLlY:Add, Button, xm y+1 w143 gAnswers,⚙️ Настройки ответов྾
+        Gui, ViMeLlY:Add, Button, x+1 yp w174 gOpenPunishHelper, 👁️ Помощник наказаний
+        Gui, ViMeLlY:Add, Button, x+1 yp w61 gOpenAdditionalFeatures, 👁️ Доп.
+        Gui, ViMeLlY:Add, Button, x17 y+1 w123 gReportLog_ToggleStatus vStatusLogButton, %ansLogStatus%
+        Gui, ViMeLlY:Add, Button, x+1 yp w140 gPunishHelper_ToggleStatus vPunishHelperButton, %punishHelperSwitch%
+        Gui, ViMeLlY:Add, Button, x+1 yp w116 gAdditionalFeatures_ToggleStatus vAdditionalFeaturesButton, %additionalFeaturesSwitch%
         Gui, ViMeLlY:Font, s9, Comic Sans MS
         Gui, ViMeLlY:Add, Button, x17 y+1 w381 gASP_ToggleStatus vStatusButton, ꚰ Автослежка: %aspStatus%
         Gui, ViMeLlY:Font, s7, Comic Sans MS
@@ -536,11 +696,6 @@ Menu:
             Gui, ViMeLlY:Add, Edit, x+5 yp h17 w25 Center vMinutesOfCatching1, %minutesOfCatching1%
             Gui, ViMeLlY:Add, Edit, x+5 yp h17 w25 Center vMinutesOfCatching2, %minutesOfCatching2%
             
-            if (orderOneGo) {
-                Gui, ViMeLlY:Add, Checkbox, x35 y+1 w330 vOrderOneGoCheckBoxV gOrderOneGoCheckBox Checked, Приоритет закрытия заказа в один заезд
-            } else {
-                Gui, ViMeLlY:Add, Checkbox, x35 y+1 w330 vOrderOneGoCheckBoxV gOrderOneGoCheckBox, Приоритет закрытия заказа в один заезд
-            }
         } else {
             SetTimer, SaveSetup, Off
         }
@@ -554,21 +709,21 @@ Menu:
         Gui, ViMeLlY:Add, Edit, x+1 yp h18 w61 vSearchYearPlayer Center, %A_YYYY%
         Gui, ViMeLlY:Add, Button, x+1 yp h18 w20 gSearchStatsByDatePlayer,⤵︎
 
-        truckerIncome := GetIncomeByDate(A_DD - 1 . "." . A_MM . "." . A_YYYY, "Доставка продуктов")
+        yesterday := PlayerYesterdayDate()
+        truckerIncome := GetIncomeByDate(yesterday, "Доставка продуктов")
         Gui, ViMeLlY:Add, Text, x27 y+1 w200,- Trucker: %truckerIncome% руб.
         Gui, ViMeLlY:Add, Edit, x+3 h18 yp w145 ReadOnly Center vSearchResultPlayerTrucker, Пусто
 
-        gardenIncome := GetIncomeByDate(A_DD - 1 . "." . A_MM . "." . A_YYYY, "Продажа урожая")
+        gardenIncome := GetIncomeByDate(yesterday, "Продажа урожая")
         Gui, ViMeLlY:Add, Text, x27 y+1 w200,- Gardens: %gardenIncome% руб.
         Gui, ViMeLlY:Add, Edit, x+3 h18 yp w145 ReadOnly Center vSearchResultPlayerGardens, Пусто
 
-        huntingIncome := GetIncomeByDate(A_DD - 1 . "." . A_MM . "." . A_YYYY, "Продажа шкур")
+        huntingIncome := GetIncomeByDate(yesterday, "Продажа шкур")
         Gui, ViMeLlY:Add, Text, x27 y+1 w200,- Hunting: %huntingIncome% руб.
         Gui, ViMeLlY:Add, Edit, x+3 h18 yp w145 ReadOnly Center vSearchResultPlayerHunting, Пусто
         Gui, ViMeLlY:Add, Text, x25 y+3 w380,° ≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡ °
     }
 
-    Gui, ViMeLlY:Add, Picture, x17 y+1 w380 h190, %A_Temp%\ViMeLlYScript_%randomLogo%.png
     Gui, ViMeLlY:Font, s7 Bold, Comic Sans MS
     Gui, ViMeLlY:Add, Link, x25 y+7, ≣≣≣ ❤ <a href="https://t.me/+1eeJ_8vhugYyNmMy">ViMeLlY Script (%version%)</a> | Приятного пользования. ❤ ≣≣≣
     Gui, ViMeLlY:Show
@@ -584,7 +739,6 @@ HotKeys:
     IniRead, humanReplyKey, %settingsFile%, Keys, humanReply
     IniRead, copyAChatKey, %settingsFile%, Keys, CopyAChat
     IniRead, statsKey, %settingsFile%, Keys, AdminStats
-    IniRead, autoIssueKey, %settingsFile%, Keys, autoIssue
     IniRead, autoEditKey, %settingsFile%, Keys, autoEdit
     IniRead, autoBizlistKey, %settingsFile%, Keys, autoBizlist
     IniRead, emergencyDeleteKey, %settingsFile%, Keys, EmergencyDelete
@@ -634,10 +788,6 @@ HotKeys:
         Gui, ViMeLlYHotKeys:Add, Text, yp x+0 w125 Center,Копирование
         Gui, ViMeLlYHotKeys:Add, Hotkey, vHK_CopyAChat x185 yp h18 +0x200 w100, %copyAChatKey%
         Gui, ViMeLlYHotKeys:Add, Text, yp vHK_CopyAChatText x+10 w130, % "‖ " .  ReadableHotkey(copyAChatKey)
-        Gui, ViMeLlYHotKeys:Add, Text, y+5 x25 w30, ｢🕹｣
-        Gui, ViMeLlYHotKeys:Add, Text, yp x+0 w125 Center,Автовыдача
-        Gui, ViMeLlYHotKeys:Add, Hotkey, vHK_autoIssue x185 yp h18 +0x200 w100, %autoIssueKey%
-        Gui, ViMeLlYHotKeys:Add, Text, yp vHK_autoIssueText x+10 w130, % "‖ " .  ReadableHotkey(autoIssueKey)
     } else {
         Gui, ViMeLlYHotKeys:Add, Text, y+5 x25 w30, ｢📍｣
         Gui, ViMeLlYHotKeys:Add, Text, yp x+0 w125 Center,Автоэдит
@@ -804,90 +954,62 @@ AdminStatsPanel:
 Return
 
 
+; === GetStats: минимум/максимум/среднее только по датированным записям ===
 GetStats(metric, daysCount, mode := "avg") {
     global statisticFile
+    days := StatsListDays()
+    n := days.Length()
+    if (n = 0 || daysCount < 1)
+        return 0
 
-    days := []
-    values := []
+    first := n - daysCount + 1
+    if (first < 1)
+        first := 1
     total := 0
-
-    IniRead, sections, %statisticFile%
-
-    Loop, Parse, sections, `n, `r
+    minimum := ""
+    maximum := ""
+    count := 0
+    Loop, % n - first + 1
     {
-        day := Trim(A_LoopField)
-        if (day != "")
-            days.Push(day)
+        day := days[first + A_Index - 1]
+        IniRead, rawValue, %statisticFile%, %day%, %metric%, 0
+        value := StatsNumber(rawValue)
+        total += value
+        count++
+        if (minimum = "" || value < minimum)
+            minimum := value
+        if (maximum = "" || value > maximum)
+            maximum := value
     }
-
-    if (days.Length() = 0)
-        return 0
-
-    startIndex := days.Length() - daysCount + 1
-    
-    if (startIndex < 1)
-        startIndex := 1
-        endIndex := days.Length()
-    
-    Loop, % (endIndex - startIndex + 1)
-    {
-        idx := startIndex + A_Index - 1
-        day := days[idx]
-        IniRead, val, %statisticFile%, %day%, %metric%, 0
-        val := val + 0
-        values.Push(val)
-        total += val
-    }
-
-    if (mode = "avg") {
-        return (values.Length() ? total / values.Length() : 0)
-    } else if (mode = "max") {
-        return MaxArr(values)
-    } else if (mode = "min") {
-        return MinArr(values)
-    } else {
-        return 0
-    }
-}
-
-
-GetChange(metric, lookback := 1, type := "percent") {
-    global statisticFile
-
-    days := []
-
-    IniRead, sections, %statisticFile%
-
-    Loop, Parse, sections, `n, `r
-    {
-        day := Trim(A_LoopField)
-        if (day != "")
-            days.Push(day)
-    }
-
-    cntDays := days.Length()
-
-    if (cntDays < (lookback + 1))
-        return 0
-
-    lastDay   := days[cntDays]
-    baseDay   := days[cntDays - lookback]
-
-    IniRead, curr, %statisticFile%, %lastDay%, %metric%, 0
-    IniRead, prev, %statisticFile%, %baseDay%, %metric%, 0
-
-    curr := curr + 0
-    prev := prev + 0
-
-    if (type = "percent") {
-        return (prev != 0) ? ((curr - prev) / prev) * 100 : 0
-    } else if (type = "delta") {
-        return (curr - prev)
-    }
-
+    if (mode = "avg")
+        return count ? total / count : 0
+    if (mode = "min")
+        return minimum
+    if (mode = "max")
+        return maximum
     return 0
 }
 
+; === GetChange: сравнение только корректных дат, без секции ERROR ===
+GetChange(metric, lookback := 1, type := "percent") {
+    global statisticFile
+    days := StatsListDays()
+    n := days.Length()
+    if (lookback < 1 || n <= lookback)
+        return 0
+
+    lastDay := days[n]
+    previousDay := days[n - lookback]
+    IniRead, rawCurr, %statisticFile%, %lastDay%, %metric%, 0
+    IniRead, rawPrev, %statisticFile%, %previousDay%, %metric%, 0
+    curr := StatsNumber(rawCurr)
+    prev := StatsNumber(rawPrev)
+    if (type = "delta")
+        return curr - prev
+    if (type = "percent")
+        return prev ? ((curr - prev) / prev) * 100 : 0
+    return 0
+}
 
 SearchStatsByDatePlayer:
     Gui, ViMeLlY:Submit, NoHide
@@ -897,24 +1019,30 @@ SearchStatsByDatePlayer:
     Gardens := GetIncomeByDate(searchDate, "Продажа урожая")
     Hunting := GetIncomeByDate(searchDate, "Продажа шкур")
 
-    if (Trucker > 0 || Gardens > 0) {
-        if (Trucker > 0) {
+    ; Сумма может содержать разделители тысяч (например, 1.000), поэтому
+    ; для проверки наличия дохода убираем форматирование.
+    if (PlayerIncomeNumber(Trucker) > 0 || PlayerIncomeNumber(Gardens) > 0 || PlayerIncomeNumber(Hunting) > 0) {
+        if (PlayerIncomeNumber(Trucker) > 0) {
             GuiControl,, SearchResultPlayerTrucker, %Trucker% руб
         } else {
             GuiControl,, SearchResultPlayerTrucker, Пусто
         }
-        if (Gardens > 0) {
+        if (PlayerIncomeNumber(Gardens) > 0) {
             GuiControl,, SearchResultPlayerGardens, %Gardens% руб
         } else {
             GuiControl,, SearchResultPlayerGardens, Пусто
         }
 
-        if (Hunting > 0) {
+        if (PlayerIncomeNumber(Hunting) > 0) {
             GuiControl,, SearchResultPlayerHunting, %Hunting% руб
         } else {
             GuiControl,, SearchResultPlayerHunting, Пусто
         }
     } else {
+        ; Не показывать данные предыдущего поиска вместо пустого результата.
+        GuiControl,, SearchResultPlayerTrucker, Пусто
+        GuiControl,, SearchResultPlayerGardens, Пусто
+        GuiControl,, SearchResultPlayerHunting, Пусто
         ToolTip("[𝐒𝐂𝐑𝐈𝐏𝐓] По Вашему запросу ничего не найдено.", 2332)
     }
 Return
@@ -934,20 +1062,6 @@ ScriptSettings:
     
     scriptSettings := !scriptSettings
     
-    Gosub, Menu
-Return
-
-
-OrderOneGoCheckBox:
-    Gui, ViMeLlY:Submit, NoHide
-    
-    if (orderOneGoCheckBoxV == 1) {
-        orderOneGo := 1
-    } else if (orderOneGoCheckBoxV == 0) {
-        orderOneGo := 0
-    }
-
-    IniWrite, %orderOneGo%, %settingsFile%, Preset, orderOneGo
     Gosub, Menu
 Return
 
@@ -997,6 +1111,7 @@ SearchStatsByDateAdmin:
 Return
 
 
+; === GetIncomeByDate: служебная функция ===
 GetIncomeByDate(CheckDate, SearchQuery := "") {
     dateParts := StrSplit(CheckDate, ".")
 
@@ -1014,32 +1129,46 @@ GetIncomeByDate(CheckDate, SearchQuery := "") {
         return 0
     }
 
-    FileEncoding, UTF-8
-    Loop, Read, %orderHistoryPath%
-    {
-        if (Trim(A_LoopReadLine) == "") {
-            continue
-        }
-        if (SearchQuery != "" && !InStr(A_LoopReadLine, SearchQuery)) {
-            continue
-        }
+    ; Не используем FileEncoding: эта команда меняет кодировку глобально
+    ; и может повлиять на другие чтения файлов в основном скрипте.
+    history := FileOpen(orderHistoryPath, "r", "UTF-8")
+    if (!IsObject(history))
+        return 0
 
-        LineArray := StrSplit(A_LoopReadLine, ",")
+    while (!history.AtEOF) {
+        historyLine := LTrim(Trim(history.ReadLine(), "`r`n"), Chr(0xFEFF))
+        if (historyLine = "" || (SearchQuery != "" && !InStr(historyLine, SearchQuery)))
+            continue
+
+        LineArray := StrSplit(historyLine, ",")
+        if (LineArray.Length() < 2)
+            continue
         LogDate := SubStr(Trim(LineArray[1]), 1, 10)
-
         if (LogDate = CheckDate) {
             CleanMoney := RegExReplace(LineArray[2], "[^\d]", "")
-            
-            if (CleanMoney != "") {
+            if (CleanMoney != "")
                 Sum += CleanMoney
-            }
         }
     }
-
+    history.Close()
     return RegExReplace(Sum, "(\d)(?=(\d{3})+(?!\d))", "$1.")
 }
 
+; === PlayerYesterdayDate: календарный вчерашний день, включая границы месяцев и годов ===
+PlayerYesterdayDate() {
+    yesterday := A_Now
+    EnvAdd, yesterday, -1, Days
+    FormatTime, formatted, %yesterday%, dd.MM.yyyy
+    return formatted
+}
 
+; === PlayerIncomeNumber: число без разделителей тысяч для сравнения ===
+PlayerIncomeNumber(value) {
+    return RegExReplace("" . value, "[^0-9]", "") + 0
+}
+
+
+; === MaxArr: служебная функция ===
 MaxArr(arr) {
     if (arr.Length() = 0)
         return 0
@@ -1054,6 +1183,7 @@ MaxArr(arr) {
 }
 
 
+; === MinArr: служебная функция ===
 MinArr(arr) {
     if (arr.Length() = 0)
         return 0
@@ -1086,7 +1216,6 @@ ResetHotkeys:
     IniDelete, %settingsFile%, Keys, humanReply
     IniDelete, %settingsFile%, Keys, AdminStats
     IniDelete, %settingsFile%, Keys, CopyAChat
-    IniDelete, %settingsFile%, Keys, autoIssue
     IniDelete, %settingsFile%, Keys, autoEdit
     IniDelete, %settingsFile%, Keys, autoBizlist
     IniDelete, %settingsFile%, Keys, EmergencyDelete
@@ -1098,8 +1227,7 @@ ResetHotkeys:
     IniWrite, %A_Space%, %settingsFile%, Keys, humanReply
     IniWrite, F10, %settingsFile%, Keys, AdminStats
     IniWrite, %A_Space%, %settingsFile%, Keys, CopyAChat
-    IniWrite, %A_Space%, %settingsFile%, Keys, autoIssue
-    IniWrite, %A_Space%, %settingsFile%, Keys, autoEdit
+        IniWrite, %A_Space%, %settingsFile%, Keys, autoEdit
     IniWrite, %A_Space%, %settingsFile%, Keys, autoBizlist
     IniWrite, %A_Space%, %settingsFile%, Keys, EmergencyDelete
 
@@ -1163,15 +1291,6 @@ OpenSettings:
 Return
 
 
-OpenAutoIssue:
-    if (autoIssueStatus) {
-        Run, notepad %autoIssueFile%
-    } else {
-        ToolTip("[𝐒𝐂𝐑𝐈𝐏𝐓] Файл авто-выдачи не создан`, так как функция отключена.", 2000)
-    }
-Return
-
-
 OpenPunishHelper:
     if (punishHelperStatus) {
         Run, notepad %punishFile%
@@ -1212,26 +1331,11 @@ ReportLog_ToggleStatus:
     
     if (reportLog) {
         IniWrite, 1, %settingsFile%, Preset, reportLog
+        ChatlogWatchFromNow("reports")
         SetTimer, answerLogger, 500
     } else {
         IniWrite, 0, %settingsFile%, Preset, reportLog
         SetTimer, answerLogger, Off
-    }
-Return
-
-
-AutoIssue_ToggleStatus:
-    autoIssueStatus := !autoIssueStatus
-    newStatus1 := autoIssueStatus ? "✔ Автовыдача" : "✘ Автовыдача"
-
-    GuiControl,, AutoIssueButton, %newStatus1%
-    
-    if (autoIssueStatus) {
-        IniWrite, 1, %settingsFile%, Preset, autoIssueStatus
-    } else {
-        IniWrite, 0, %settingsFile%, Preset, autoIssueStatus
-        Sleep, 300
-        FileDelete, %autoIssueFile%
     }
 Return
 
@@ -1244,10 +1348,14 @@ PunishHelper_ToggleStatus:
     
     if (punishHelperStatus) {
         IniWrite, 1, %settingsFile%, Preset, punishHelperStatus
+        if (!FileExist(punishFile)) {
+            template := "# Формат: /epp = /jail 60 Езда по полям`n"
+            FileAppend, %template%, %punishFile%, UTF-8
+        }
+        SetTimer, punishHelper, -100
     } else {
         IniWrite, 0, %settingsFile%, Preset, punishHelperStatus
-        Sleep, 300
-        FileDelete, %punishFile%
+        ; Файл пользовательских правил наказаний не удаляем при выключении.
     }
 Return
 
@@ -1262,8 +1370,7 @@ AdditionalFeatures_ToggleStatus:
         IniWrite, 1, %settingsFile%, Preset, additionalFeaturesStatus
     } else {
         IniWrite, 0, %settingsFile%, Preset, additionalFeaturesStatus
-        Sleep, 300
-        FileDelete, %additionalFeaturesFile%
+        ; Не удаляем пользовательский дополнительный модуль.
     }
 Return
 
@@ -1278,8 +1385,7 @@ ToggleAdminStats:
         IniWrite, 1, %settingsFile%, Preset, adminStatsStatus
     } else {
         IniWrite, 0, %settingsFile%, Preset, adminStatsStatus
-        Sleep, 300
-        FileDelete, %statisticFile%
+        ; История статистики сохраняется даже при выключении.
     }
 Return
 
@@ -1327,7 +1433,6 @@ SaveHotKeys:
     hotkeys["CopyAChat"] := HK_CopyAChat
     hotkeys["Menu"] := HK_Menu
     hotkeys["AdminStats"] := HK_AdminStats
-    hotkeys["autoIssue"] := HK_autoIssue
     hotkeys["autoEdit"] := HK_autoEdit
     hotkeys["autoBizlist"] := HK_autoBizlist
     hotkeys["EmergencyDelete"] := HK_EmergencyDelete
@@ -1341,14 +1446,12 @@ SaveHotKeys:
         IniWrite, %HK_humanReply%, %settingsFile%, Keys, humanReply
         IniWrite, %HK_CopyAChat%, %settingsFile%, Keys, CopyAChat
         IniWrite, %HK_AdminStats%, %settingsFile%, Keys, AdminStats
-        IniWrite, %HK_autoIssue%, %settingsFile%, Keys, autoIssue
         GuiControl, ViMeLlYHotKeys:, HK_WatchText, % (HK_Watch) ? "‖ " . ReadableHotkey(HK_Watch) : "‖ Не назначена"
         GuiControl, ViMeLlYHotKeys:, HK_ReplyText, % (HK_Reply) ? "‖ " . ReadableHotkey(HK_Reply) : "‖ Не назначена"
         GuiControl, ViMeLlYHotKeys:, HK_RequestText, % (HK_Request) ? "‖ " . ReadableHotkey(HK_Request) : "‖ Не назначена"
         GuiControl, ViMeLlYHotKeys:, HK_humanReplyText, % (HK_humanReply) ? "‖ " . ReadableHotkey(HK_humanReply) : "‖ Не назначена"
         GuiControl, ViMeLlYHotKeys:, HK_CopyAChatText, % (HK_CopyAChat) ? "‖ " . ReadableHotkey(HK_CopyAChat) : "‖ Не назначена"
         GuiControl, ViMeLlYHotKeys:, HK_AdminStatsText, % (HK_AdminStats) ? "‖ " . ReadableHotkey(HK_AdminStats) : "‖ Не назначена"
-        GuiControl, ViMeLlYHotKeys:, HK_autoIssueText, % (HK_autoIssue) ? "‖ " . ReadableHotkey(HK_autoIssue) : "‖ Не назначена"
         IniWrite, %isHumanInput%, %settingsFile%, Preset, isHumanInput
         IniWrite, %reportLog%, %settingsFile%, Preset, reportLog
         IniWrite, %currentSetup%, %settingsFile%, Preset, currentSetup
@@ -1387,30 +1490,32 @@ Return
 
 
 ClearAnswers:
-    IniRead, userNickname, %settingsFile%, Preset, userNickname
-    IniRead, savedDate, %settingsFile%, %userNickname%, Date
-    IniRead, totalAns, %settingsFile%, %userNickname%, totalAns
-    IniRead, totalJails, %settingsFile%, %userNickname%, totalJails
-    
-    Sleep, 333
-
-    if (userNickname != "" && userNickname != "ERROR") {
-        ToolTip, [𝐒𝐂𝐑𝐈𝐏𝐓] Дата предыдущей статистики: %savedDate% | Текущая: %today%`n↪︎ Сбрасываю статистику...
-        
-        global today := A_DD . "." . A_MM . "." . A_YYYY
-        IniWrite, %totalAns%, %statisticFile%, %savedDate%, totalAns
-        IniWrite, %totalJails%, %statisticFile%, %savedDate%, totalJails
-        IniWrite, %today%, %settingsFile%, %userNickname%, Date
-        IniWrite, 0, %settingsFile%, %userNickname%, totalAns
-        IniWrite, 0, %settingsFile%, %userNickname%, totalJails
-        Sleep, 333
-        ToolTip, [𝐒𝐂𝐑𝐈𝐏𝐓] Дата предыдущей статистики: %savedDate% | Текущая: %today%`n↪︎ Ваша статистика сброшена.
-        GoSub, AdminStatsPanel
-        Sleep, 1771
-        ToolTip
+    ; Ручной сброс сохраняет текущие счетчики только под реальной датой.
+    if (!adminsStatistics()) {
+        ToolTip("[STATISTICS] Невозможно определить администратора или дату.", 2300)
+        Return
     }
-Return
 
+    IniRead, statsKey, %settingsFile%, Preset, userNickname, %A_Space%
+    statsKey := Trim(statsKey)
+    IniRead, savedDate, %settingsFile%, %statsKey%, Date, %A_Space%
+    savedDate := Trim(savedDate)
+    if (!StatsIsDate(savedDate)) {
+        ToolTip("[STATISTICS] Некорректная дата, сброс отменен.", 2300)
+        Return
+    }
+    IniRead, totalAns, %settingsFile%, %statsKey%, totalAns, 0
+    IniRead, totalJails, %settingsFile%, %statsKey%, totalJails, 0
+    if (!StatsArchiveDay(savedDate, totalAns, totalJails)) {
+        ToolTip("[STATISTICS] Ошибка записи statistic.ini, сброс отменен.", 2500)
+        Return
+    }
+    IniWrite, 0, %settingsFile%, %statsKey%, totalAns
+    IniWrite, 0, %settingsFile%, %statsKey%, totalJails
+    today := StatsToday()
+    ToolTip("[STATISTICS] Данные сохранены за " . savedDate . ". Счетчики обнулены.", 1800)
+    GoSub, AdminStatsPanel
+Return
 
 Setup1:
     SetPreset("Медленно", 260, 90, 140)
@@ -1470,11 +1575,12 @@ Return
 
 
 EmergencyDelete:
-    Run, %ComSpec% /c timeout /t 1 & del "%A_ScriptFullPath%" & del "%settingsFile%" & del "%punishFile%" & del "%autoIssueFile%" & rmdir /s /q "%scriptDir%", , Hide
 ExitApp
 
 
+; === LoadHotkeys: служебная функция ===
 LoadHotkeys() {
+    global hotkeys, settingsFile
     IniRead, hkWatch, %settingsFile%, Keys, Watch
     IniRead, hkRequest, %settingsFile%, Keys, Request
     IniRead, hkReply, %settingsFile%, Keys, Reply
@@ -1482,7 +1588,6 @@ LoadHotkeys() {
     IniRead, hkCopyAChat, %settingsFile%, Keys, CopyAChat
     IniRead, hkMenu, %settingsFile%, Keys, Menu
     IniRead, hkAdminStats, %settingsFile%, Keys, AdminStats
-    IniRead, hkAutoIssue, %settingsFile%, Keys, autoIssue
     IniRead, hkAutoEdit, %settingsFile%, Keys, autoEdit
     IniRead, hkAutoBizlist, %settingsFile%, Keys, autoBizlist
     IniRead, hkEmergencyDelete, %settingsFile%, Keys, EmergencyDelete
@@ -1494,15 +1599,15 @@ LoadHotkeys() {
     hotkeys["CopyAChat"] := hkCopyAChat != "ERROR" ? hkCopyAChat : ""
     hotkeys["Menu"] := (hkMenu == "ERROR") ? "" : (hkMenu == "" ? "F2" : hkMenu)
     hotkeys["AdminStats"] := (hkAdminStats == "ERROR") ? "" : (hkAdminStats == "" ? "F10" : hkAdminStats)
-    hotkeys["autoIssue"] := (hkAutoIssue == "ERROR") ? "" : (hkAutoIssue == "" ? "" : hkAutoIssue)
     hotkeys["autoEdit"] := (hkAutoEdit == "ERROR") ? "" : (hkAutoEdit == "" ? "" : hkAutoEdit)
     hotkeys["autoBizlist"] := (hkAutoBizlist == "ERROR") ? "" : (hkAutoBizlist == "" ? "" : hkAutoBizlist)
     hotkeys["EmergencyDelete"] := (hkEmergencyDelete == "ERROR") ? "" : (hkEmergencyDelete == "" ? "" : hkEmergencyDelete)
 }
 
 
+; === BindHotkeys: служебная функция ===
 BindHotkeys() {
-    global previousHotkeys, hotkeys, settingsFile
+    global previousHotkeys, hotkeys, settingsFile, scriptMode
 
     for action, oldKey in previousHotkeys {
         if (oldKey != "" && !(action = "Reply" || action = "")) {
@@ -1510,8 +1615,15 @@ BindHotkeys() {
         }
     }
 
+    ; Не переносим хоткеи другой роли при переключении Admin/Player.
+    previousHotkeys := {}
     successLog := ""
     for action, newKey in hotkeys {
+        if (scriptMode = "Player" && action != "autoEdit" && action != "autoBizlist"
+            && action != "Menu" && action != "EmergencyDelete")
+            continue
+        if (scriptMode = "Admin" && (action = "autoEdit" || action = "autoBizlist"))
+            continue
         if (newKey != "" && !(action = "Reply" || action = "")) {
             try {
                 Hotkey, %newKey%, %action%, On
@@ -1533,6 +1645,7 @@ BindHotkeys() {
 }
 
 
+; === WatchKeys: служебная функция ===
 WatchKeys() {
     global repID
 
@@ -1547,6 +1660,7 @@ WatchKeys() {
 }
 
 
+; === WatchSpectate: служебная функция ===
 WatchSpectate() {
     global repID
 
@@ -1565,6 +1679,7 @@ WatchSpectate() {
 }
 
 
+; === SetPreset: служебная функция ===
 SetPreset(name, val1, val2, val3) {
     global currentSetup, CMDDelay, InputDelay1, InputDelay2
     
@@ -1581,6 +1696,7 @@ SetPreset(name, val1, val2, val3) {
 }
 
 
+; === FindChatlogPath: служебная функция ===
 FindChatlogPath() {
     docPath := A_MyDocuments
     targetPath := docPath . "\RADMIR CRMP User Files\SAMP\chatlog.txt"
@@ -1595,7 +1711,55 @@ FindChatlogPath() {
 }
 
 
+; ============================================================================================================================
+; #region || ОЧЕРЕДЬ БЕЗОПАСНЫХ АВТОКОМАНД
+; Только ответы/наблюдение; наказания и команды меню остаются ручными.
+; Очередь не отправляет старые команды после потери фокуса надолго.
+; === AutomationQueueChat: очередь команд чата ===
+AutomationQueueChat(command) {
+    global automationQueue
+    if (SubStr(command, 1, 4) != "/pm " && SubStr(command, 1, 4) != "/sp ")
+        return false
+    if (automationQueue.Length() >= 4)
+        return false
+    automationQueue.Push({cmd:command, queued:A_TickCount})
+    SetTimer, AutomationProcessQueue, 40
+    return true
+}
+
+; === AutomationProcessQueue: последовательная отправка команд ===
+AutomationProcessQueue() {
+    global automationQueue, automationBusy, automationLastSent, ChatIsOpen, requestCanRecall
+    if (automationBusy || automationQueue.Length() = 0) {
+        if (automationQueue.Length() = 0)
+            SetTimer, AutomationProcessQueue, Off
+        return
+    }
+    job := automationQueue[1]
+    if ((A_TickCount - job.queued) > 2500) {
+        automationQueue.RemoveAt(1)
+        return
+    }
+    if (!WinActive("ahk_exe gta_sa.exe") || ChatIsOpen || (A_TickCount - automationLastSent < 180))
+        return
+    automationBusy := true
+    automationQueue.RemoveAt(1)
+    SetTimer, AutomationProcessQueue, Off
+    ; Не разрешаем прерывать набор внутри этой краткой операции.
+    Critical, On
+    requestCanRecall := false
+    SendInput, % "{F6}" . job.cmd . "{Enter}"
+    automationLastSent := A_TickCount
+    Critical, Off
+    automationBusy := false
+    if (automationQueue.Length() > 0)
+        SetTimer, AutomationProcessQueue, 40
+}
+
+; === sendReply: служебная функция ===
 sendReply(playerId, response) {
+    global isHumanInput, CMDDelay, InputDelay1, InputDelay2, requestCanRecall
+    requestCanRecall := false
     if (isHumanInput) {
         l := StrLen(response) + 1
         SendInput, {F6}/pm  %response%{left %l%}
@@ -1612,11 +1776,12 @@ sendReply(playerId, response) {
         Sleep, 50
         SendInput, {Enter up}
     } else {
-        SendInput, {F6}/pm %playerId% %response%{Enter}
+        AutomationQueueChat("/pm " . playerId . " " . response)
     }
 }
 
 
+; === ReadableHotkey: служебная функция ===
 ReadableHotkey(key) {
     mods := []
     mainKey := key
@@ -1642,6 +1807,7 @@ ReadableHotkey(key) {
 }
 
 
+; === Join: служебная функция ===
 Join(delim, arr*) {
     out := ""
     
@@ -1652,6 +1818,7 @@ Join(delim, arr*) {
 }
 
 
+; === HashLine: служебная функция ===
 HashLine(str) {
     hash := 0
     
@@ -1662,18 +1829,119 @@ HashLine(str) {
 }
 
 
-checkChatLog() {
-    FileGetSize, _, %filePath%
-    
-    Loop, Read, %filePath%
-    {
-        LineNumber := A_Index
+; ============================================================================================================================
+; #region || CHATLOG - инкрементальный читатель с независимыми курсорами
+; Позиции выражены в байтах UTF-8; недописанные строки не выдаются обработчикам.
+; Если файл сокращён, перезаписан или создан заново, курсор возвращается в начало.
+; При отсутствии файла обработчики получают пустой список, не теряя состояние навсегда.
+; === ChatlogReadNew: чтение добавленных строк журнала ===
+ChatlogReadNew(channel, startAt := "tail", reset := false) {
+    global filePath
+    static cursors := {}
+    result := []
+    if (filePath = "")
+        filePath := A_MyDocuments . "\RADMIR CRMP User Files\SAMP\chatlog.txt"
+    if (!FileExist(filePath)) {
+            ; Не забывать канал: после повторного появления файла считывать с начала.
+        cursors[channel] := {pos:0, created:"", probe:"", probePos:0}
+        return result
     }
-    
-    return LineNumber
+
+    FileGetSize, size, %filePath%
+    FileGetTime, created, %filePath%, C
+    ; RADMIR/SAMP обычно пишет ANSI/CP1251, а не UTF-8.
+    ; При UTF-8 BOM распознаём кодировку автоматически.
+    charset := "CP0"
+    probe := FileOpen(filePath, "r")
+    if (IsObject(probe)) {
+        bom := probe.ReadUChar() . ":" . probe.ReadUChar() . ":" . probe.ReadUChar()
+        probe.Close()
+        if (bom == "239:187:191")
+            charset := "UTF-8"
+    }
+    f := FileOpen(filePath, "r", charset)
+    if (!IsObject(f))
+        return result
+
+    if (reset || !cursors.HasKey(channel)) {
+        state := {pos: startAt = "all" ? 0 : size, created: created, probe: "", probePos: 0}
+        cursors[channel] := state
+        ChatlogRememberProbe(f, state)
+        f.Close()
+        return result
+    }
+
+    state := cursors[channel]
+    replacement := (size < state.pos || created != state.created)
+    if (!replacement && state.pos > 0) {
+        probeNow := ChatlogFingerprint(f, state.probePos, state.pos - state.probePos)
+        if (probeNow != state.probe)
+            replacement := true
+    }
+    if (replacement) {
+        state.pos := 0
+        state.created := created
+        state.probe := ""
+        state.probePos := 0
+    }
+
+    f.Pos := state.pos
+    while (!f.AtEOF) {
+        before := f.Pos
+        line := f.ReadLine()
+        if (SubStr(line, 0) != "`n") {
+            f.Pos := before
+            break
+        }
+        result.Push(LTrim(RTrim(line, "`r`n"), Chr(0xFEFF)))
+    }
+    state.pos := f.Pos
+    ChatlogRememberProbe(f, state)
+    f.Close()
+    return result
+}
+
+; Контроль последних байтов: обнаруживает очистку с быстрым заполнением файла.
+; === ChatlogRememberProbe: служебная функция ===
+ChatlogRememberProbe(f, state) {
+    state.probePos := (state.pos > 96) ? state.pos - 96 : 0
+    state.probe := ChatlogFingerprint(f, state.probePos, state.pos - state.probePos)
+}
+
+; Сравнение сырых байтов, а не символов UTF-8 (без ложных сбросов на кириллице).
+; === ChatlogFingerprint: служебная функция ===
+ChatlogFingerprint(f, start, bytes) {
+    if (bytes <= 0)
+        return 0
+    f.Pos := start
+    VarSetCapacity(buffer, bytes, 0)
+    read := f.RawRead(buffer, bytes)
+    checksum := 0
+    Loop, %read%
+        checksum := Mod(checksum * 33 + NumGet(buffer, A_Index - 1, "UChar"), 2147483647)
+    return checksum
+}
+
+; Принудительная установка курсора на конец файла при включении функции.
+; === ChatlogWatchFromNow: служебная функция ===
+ChatlogWatchFromNow(channel) {
+    return ChatlogReadNew(channel, "tail", true)
+}
+
+; Совместимость с ручными функциями, которым нужен номер строки.
+; === checkChatLog: служебная функция ===
+checkChatLog() {
+    global filePath
+    count := 0
+    if (filePath = "" || !FileExist(filePath))
+        return count
+    Loop, Read, %filePath%
+        count := A_Index
+    return count
 }
 
 
+; === Base64Encode: служебная функция ===
 Base64Encode(str) {
     VarSetCapacity(bin, StrPut(str, "UTF-8"))
     len := StrPut(str, &bin, "UTF-8") - 1
@@ -1685,6 +1953,7 @@ Base64Encode(str) {
 }
 
 
+; === Base64Decode: служебная функция ===
 Base64Decode(str) {
     DllCall("crypt32\CryptStringToBinary", "ptr", &str, "uint", StrLen(str), "uint", 0x1, "ptr", 0, "uint*", size, "ptr", 0, "ptr", 0)
     VarSetCapacity(buf, size, 0)
@@ -1694,13 +1963,16 @@ Base64Decode(str) {
 }
 
 
+; === getAnswer: служебная функция ===
 getAnswer(val) {
+    global settingsFile
     IniRead, result, %settingsFile%, Answers, %val%
     
     Return result
 }
 
 
+; === ShowTip: служебная функция ===
 ShowTip(author, id, text, key, type, reply) {
     if (type == "Вопрос") {
         prefix := "[𝐐𝐔𝐄𝐒𝐓𝐈𝐎𝐍]"
@@ -1718,15 +1990,23 @@ ShowTip(author, id, text, key, type, reply) {
 }
 
 
+; === CountAdminActions: учёт действий администратора ===
 CountAdminActions() {
     global adminAns, adminJails, today
+    global settingsFile, userNickname
     
     adminName := Base64Decode(userNickname)
+    ; Автоматически переносим статистику при смене даты, даже без перезапуска.
+    if (StatsToday() != today)
+        adminsStatistics()
     
-    Loop, Read, %filePath%
-    {
-        line := A_LoopReadLine
-        
+    ; Первая обработка читает существующий chatlog (старый учёт сохраняется).
+    static initialized := false
+    if (!initialized) {
+        ChatlogReadNew("stats", "all", true)
+        initialized := true
+    }
+    for _, line in ChatlogReadNew("stats") {
         if RegExMatch(line, "^\[(\d{2}):(\d{2}):(\d{2})\]", t) {
             lineTime := t1 * 3600 + t2 * 60 + t3
             currentTime := A_Hour * 3600 + A_Min * 60 + A_Sec
@@ -1734,16 +2014,14 @@ CountAdminActions() {
             
             if (lineTime > currentTime)
                 continue
-            if (currentDate != today) {
-                GoSub, ClearAnswers
-            }
+            ; Смена дня обрабатывается adminsStatistics(), без GUI и ручного сброса.
         } if RegExMatch(line, "Администратор " . adminName . "(?:\[(\d+)\])? для (\w+(?:_\w+)*)\[(\d+)\]:") || RegExMatch(line, "Агент поддержки " . adminName . "(?:\[(\d+)\])? для (\w+(?:_\w+)*)\[(\d+)\]:") {
             hash := HashLine(line)
             IniRead, seen, %settingsFile%, ProcessedLines, %hash%
             
             if (seen == "ERROR") {
                 IniRead, totalAns, %settingsFile%, %userNickname%, totalAns
-                totalAns++
+                totalAns := ((totalAns = "ERROR") ? 0 : totalAns) + 1
                 IniWrite, %totalAns%, %settingsFile%, %userNickname%, totalAns
                 IniWrite, %hash%, %settingsFile%, ProcessedLines, %hash%
             }
@@ -1754,7 +2032,7 @@ CountAdminActions() {
             
             if (seen == "ERROR") {
                 IniRead, totalJails, %settingsFile%, %userNickname%, totalJails
-                totalJails++
+                totalJails := ((totalJails = "ERROR") ? 0 : totalJails) + 1
                 IniWrite, %totalJails%, %settingsFile%, %userNickname%, totalJails
                 IniWrite, %hash%, %settingsFile%, ProcessedLines, %hash%
             }
@@ -1764,7 +2042,7 @@ CountAdminActions() {
             
             if (seen == "ERROR") {
                 IniRead, totalJails, %settingsFile%, %userNickname%, totalJails
-                totalJails--
+                totalJails := ((totalJails = "ERROR") ? 0 : totalJails) - 1
                 IniWrite, %totalJails%, %settingsFile%, %userNickname%, totalJails
                 IniWrite, %hash%, %settingsFile%, ProcessedLines, %hash%
             }
@@ -1773,6 +2051,7 @@ CountAdminActions() {
 }
 
 
+; === TransliterateToRussian: служебная функция ===
 TransliterateToRussian(str) {
     static map
     
@@ -1799,23 +2078,27 @@ TransliterateToRussian(str) {
 }
 
 
+; === StrIsUpper: служебная функция ===
 StrIsUpper(ch) {
     return (ch ~= "[A-ZА-ЯЁ]")
 }
 
 
+; === StrUpper: служебная функция ===
 StrUpper(str) {
     StringUpper, out, str
     return out
 }
 
 
+; === StrLower: служебная функция ===
 StrLower(str) {
     StringLower, out, str
     return out
 }
 
 
+; === DynamicPunish: служебная функция ===
 DynamicPunish(cmdKey) {
     SendInput, %cmdKey%{Space}
     Input, playerId, V I M, {Enter}{Space}
@@ -1829,10 +2112,12 @@ DynamicPunish(cmdKey) {
 }
 
 
+; === HandlePunishment: служебная функция ===
 HandlePunishment(cmdKey, playerId) {
     LineNumber := 0
     SendInput, ^a {BackSpace}{Enter}
     Sleep, 70
+    requestCanRecall := false
     SendInput, {F6}/id %playerId%{Enter}
     Sleep, 430
     Loop, Read, %filePath%
@@ -1879,15 +2164,29 @@ HandlePunishment(cmdKey, playerId) {
             duration := Round(duration / 2)
         }
 
+        ; Не отправлять наказание, если причина уже испорчена кодировкой.
+        if (InStr(reason, Chr(0xFFFD)) || RegExMatch(reason, "^(\?\s*){2,}$")) {
+            ToolTip("[PUNISH] Ошибка кодировки причины. Проверьте punish.txt.", 4500)
+            return
+        }
         SendMessage, 0x50,, 0x4190419,, A
         ToolTip("[𝐒𝐂𝐑𝐈𝐏𝐓] Игрок " . playerName . "[" . playerId . "] определён. Уровень: " . playerLvl . ".`n↪︎ Выдаю: " . cmd . " " . playerId . " " . duration . " " . reason, 2332)
-        SendInput, {F6}%cmd% %playerId% %duration% %reason%{Enter}
+        ; SendEvent имитирует клавиши под RU-раскладкой; для GTA это
+        ; надёжнее, чем Unicode KEYEVENTF_UNICODE, которым пользуется SendInput.
+        fullPunishCommand := Trim(cmd . " " . playerId . " " . duration . " " . reason)
+        SendInput, {F6}
+        Sleep, 85
+        SetKeyDelay, 25, 15
+        SendEvent, % "{Raw}" . fullPunishCommand
+        Sleep, 80
+        SendEvent, {Enter}
     } else {
         ToolTip("[𝐒𝐂𝐑𝐈𝐏𝐓] Введенный ID: " . playerId . ". Определенный игрок: " . playerName . "[" . playerDetectId . "]`n↪︎ Выдача наказания приостановлена.", 2332)
     }
 }
 
 
+; === IsGTAOpen: служебная функция ===
 IsGTAOpen() {
     Process, Exist, gta_sa.exe
     
@@ -1895,6 +2194,7 @@ IsGTAOpen() {
 }
 
 
+; === logTimersOff: служебная функция ===
 logTimersOff() {
     SetTimer, WatchKeys, Off
     SetTimer, respondComplaint, Off
@@ -1902,12 +2202,14 @@ logTimersOff() {
 }
 
 
+; === spTimersOff: служебная функция ===
 spTimersOff() {
     SetTimer, WatchKeys, Off
     SetTimer, WatchSpectate, Off
 }
 
 
+; === TimerFunc: служебная функция ===
 TimerFunc() {
     ToolTip("Время таймера вышло.", 15000)
     
@@ -1926,6 +2228,7 @@ humanReply:
     humanReplyFunc()
 Return
 
+; === humanReplyFunc: служебная функция ===
 humanReplyFunc() {
     lastComplaint := ""
     lastLineNum := 0
@@ -1946,6 +2249,7 @@ humanReplyFunc() {
         ToolTip("ℹ️ ID не найдено.", 300)
         Return
     } else if (isHumanInput) {
+        requestCanRecall := false
         SendInput, {F6}/pm{Space}
         Sleep, %CMDDelay%
 
@@ -1958,6 +2262,7 @@ humanReplyFunc() {
 
         SendInput, {Space}
     } else if (!isHumanInput) {
+        requestCanRecall := false
         SendInput, {F6}/pm %pID%{Space}
     }
 }
@@ -1968,6 +2273,7 @@ Watch:
     autoSpectate()
 Return
 
+; === autoSpectate: служебная функция ===
 autoSpectate() {
     LineNumber := 0
     Loop, Read, %filePath%
@@ -1991,6 +2297,7 @@ autoSpectate() {
         
         return
     } if (isHumanInput) {
+        requestCanRecall := false
         SendInput, {F6}/sp{Space}
         Sleep, %CMDDelay%
 
@@ -2005,6 +2312,7 @@ autoSpectate() {
         Sleep, 50
         SendInput, {Enter up}
     } else {
+        requestCanRecall := false
         SendInput, {F6}/sp %specID%{Enter}
     }
 
@@ -2040,39 +2348,118 @@ autoSpectate() {
 }
 
 
+; === Request: следующий /z без повторного набора всей команды ===
 Request:
+    if (requestBusy || ChatIsOpen || !WinActive("ahk_exe gta_sa.exe"))
+        Return
+
+    requestBusy := true
+
+    ; Оставляем исходный ввод стартового ID прямо в чате игры.
     if (lastRequest == "") {
+        requestCanRecall := false
+        requestLastSent := ""
         SendMessage, 0x50,, 0x4190419,, A
         SendInput, {F6}[Автозапрос] Введите ID последнего запроса:{Space}
-        Input, lastRequest, V I M, {Enter}{Esc}
-        
-        if (ErrorLevel = "EndKey:Escape") {
-            SendInput, ^a {BackSpace}
-            Sleep, 100
+        Input, lastRequest, V I M, {Enter}{NumpadEnter}{Esc}
+        inputResult := ErrorLevel
+        lastRequest := Trim(lastRequest)
+        ; Исходная очистка ввода в чате без лишнего Esc (не открыть pause menu).
+        SendInput, ^a{Backspace}
+        if ((inputResult != "EndKey:Enter" && inputResult != "EndKey:NumpadEnter") || !RegExMatch(lastRequest, "^[1-9][0-9]{0,11}$")) {
+            lastRequest := ""
+            requestBusy := false
             Return
         }
-
-        SendInput, ^a {BackSpace}
-    } else if (lastRequest != "") {
-        if (isHumanInput) {
-            SendInput, {F6}/z{Space}
-            Sleep, %CMDDelay%
-
-            Loop, Parse, lastRequest
-            {
-                SendInput, %A_LoopField%
-                Random, rDelay1, %InputDelay1%, %InputDelay2%
-                Sleep, rDelay1
-            }
-
-            SendInput, {Enter}
-        } else {
-            SendInput, {F6}/z %lastRequest%{Enter}
-        }
-
-        lastRequest++
+        ChatIsOpen := false
+        requestBusy := false
+        Return
     }
+
+    nextRequest := "" . lastRequest
+    ; Отправлять только положительные числа (проверка состояния счётчика).
+    if (!RegExMatch(nextRequest, "^[1-9][0-9]{0,11}$")) {
+        ToolTip("[REQUEST] Некорректный ID. Перезапустите скрипт для сброса.", 2500)
+        requestBusy := false
+        Return
+    }
+
+    if (isHumanInput) {
+        if (requestLastSent != "") {
+            change := RequestChangeDigits(requestLastSent, nextRequest)
+            SendInput, {F6}
+            Sleep, 90
+            if (requestCanRecall) {
+                ; ↑ поднимает последнюю /z без повторного ввода всей команды.
+                SendInput, {Up}{End}
+            } else {
+                ; После другой команды не редактируем чужую историю.
+                ; Восстанавливаем СВОЙ предыдущий /z единым вводом.
+                previousCommand := "/z " . requestLastSent
+                SendInput, %previousCommand%
+            }
+            Sleep, 90
+            if (change.backspaces > 0) {
+                erase := "{Backspace " . change.backspaces . "}"
+                SendInput, %erase%
+                Sleep, 90
+            }
+            RequestTypeChangedDigits(change.suffix)
+        } else {
+            ; Только первый /z ещё неоткуда вызывать стрелкой ↑.
+            SendInput, {F6}/z{Space}
+            Sleep, 90
+            RequestTypeChangedDigits(nextRequest)
+        }
+        Sleep, 65
+        SendInput, {Enter}
+    } else {
+        ; Автоматический режим не меняем.
+        SendInput, {F6}/z %nextRequest%{Enter}
+    }
+
+    requestLastSent := nextRequest
+    requestCanRecall := true
+    lastRequest := nextRequest + 1
+    ChatIsOpen := false
+    requestBusy := false
 Return
+
+; === RequestChangeDigits: минимальная замена суффикса (9 -> 10, 99 -> 100) ===
+RequestChangeDigits(previous, next) {
+    previous := "" . previous
+    next := "" . next
+    same := 0
+    n := StrLen(previous) < StrLen(next) ? StrLen(previous) : StrLen(next)
+    Loop, %n%
+    {
+        if (SubStr(previous, A_Index, 1) != SubStr(next, A_Index, 1))
+            break
+        same := A_Index
+    }
+    return {backspaces: StrLen(previous) - same, suffix: SubStr(next, same + 1)}
+}
+
+; === RequestTypeChangedDigits: медленно печатаем ТОЛЬКО изменившиеся цифры ===
+RequestTypeChangedDigits(digits) {
+    global InputDelay1, InputDelay2
+    dMin := InputDelay1 + 0
+    dMax := InputDelay2 + 0
+    if (dMin < 35 || dMin > 1000)
+        dMin := 100
+    if (dMax < dMin || dMax > 1500)
+        dMax := dMin + 80
+    Loop, Parse, digits
+    {
+        digit := A_LoopField
+        if (!RegExMatch(digit, "^[0-9]$"))
+            return false
+        SendInput, %digit%
+        Random, pauseMs, %dMin%, %dMax%
+        Sleep, %pauseMs%
+    }
+    return true
+}
 
 
 CopyAChat:
@@ -2094,8 +2481,7 @@ Return
 
 
 AdminStats:
-    userNickname := Trim(Base64Encode(userNickname), " `t`r`n")
-
+    ; nickname уже закодирован, его нельзя кодировать повторно.
     IniRead, totalAns, %settingsFile%, %userNickname%, totalAns
     IniRead, totalJails, %settingsFile%, %userNickname%, totalJails
         
@@ -2110,122 +2496,259 @@ AdminStats:
 Return
 
 
+; === punishHelper: служебная функция ===
 punishHelper() {
-    Loop, Read, %punishFile%
+    global punishHelperStatus, punishFile, punishMap
+    static initialized := false
+    if (initialized || !punishHelperStatus || !FileExist(punishFile))
+        return
+
+    newMap := PunishReadConfig(punishFile)
+    if (!IsObject(newMap) || newMap.Count() = 0) {
+        ToolTip("[PUNISH] Не найдены правила или не удалось прочитать punish.txt", 3000)
+        return
+    }
+    punishMap := newMap
+    for cmdKey, fullCmd in punishMap {
+        Hotstring(":*?:" . cmdKey . " ", Func("DynamicPunish").Bind(cmdKey))
+        ruCmdKey := TransliterateToRussian(cmdKey)
+        if (ruCmdKey != cmdKey)
+            Hotstring(":*?:" . ruCmdKey . " ", Func("DynamicPunish").Bind(cmdKey))
+    }
+    initialized := true
+}
+
+; === PunishReadConfig: UTF-8 / резервное чтение старого CP1251 ===
+PunishReadConfig(path) {
+    source := FileOpen(path, "r", "UTF-8")
+    if (!IsObject(source))
+        return ""
+    content := source.Read()
+    source.Close()
+
+    ; Для ANSI (CP1251) UTF-8-декодер ставит символы замены U+FFFD.
+    if (InStr(content, Chr(0xFFFD))) {
+        source := FileOpen(path, "r", "CP1251")
+        if (!IsObject(source))
+            return ""
+        content := source.Read()
+        source.Close()
+    }
+
+    newMap := {}
+    Loop, Parse, content, `n, `r
     {
-        line := Trim(A_LoopReadLine, " `t")
+        line := Trim(A_LoopField, " `t")
+        line := LTrim(line, Chr(0xFEFF))
         if (line = "" || RegExMatch(line, "^(;|#|//|--)"))
-        continue
-        if RegExMatch(A_LoopReadLine, "^\s*(\/\w+)\s*=\s*(.+)", m) {
+            continue
+        if RegExMatch(line, "^\s*(/\w+)\s*=\s*(.+)$", m) {
             cmdKey := m1
-            punishMap[cmdKey] := m2
-            Hotstring(":*?:" . cmdKey . " ", Func("DynamicPunish").Bind(cmdKey))
-            ruCmdKey := TransliterateToRussian(cmdKey)
-            if (ruCmdKey != cmdKey) {
-                Hotstring(":*?:" . ruCmdKey . " ", Func("DynamicPunish").Bind(cmdKey))
-            }
+            cmdValue := Trim(m2)
+            if (cmdValue != "")
+                newMap[cmdKey] := cmdValue
         }
     }
+    return newMap
 }
 
 
+
+; ============================================================================================================================
+; #region || ОТВЕТЫ РЕПОРТОВ: answer-rules.txt (ключ = ответ)
+; === DefaultAnswerRulesText: встроенные 91 правило ответа для первого запуска ===
+DefaultAnswerRulesText() {
+    rules := ""
+    rules .= "# ViMeLlY Script: ключ = ответ`r`n"
+    rules .= "# UTF-8, одна запись на строку. Не удаляйте сам файл.`r`n"
+    rules .= "# Не используйте знак = в ключе.`r`n"
+    rules .= "свалк = Свалка: 7:00, 11:00, 14:00, 19:00, 23:00.`r`n"
+    rules .= "конт = Контейнеры: 8:00, 12:00, 16:00, 20:00, 00:00.`r`n"
+    rules .= "адвокат = Список адвокатов -> /adlist. Гражданское лицо: 15.000, гос.организации: 20.000, ОПГ/Банды: 30.000 р. (КПЗ), ФСИН: 30.000.`r`n"
+    rules .= "лиц = В Правительстве(/liclist). Права: 10.000; проф.права: 40.000; рыбалка: 40.000; охота: 65.000; оружие: 85.000 руб.`r`n"
+    rules .= "мед = Мед.карту можно получить в больнице г.Арзамас. Чтобы проверить медиков в сети, используйте: /medlist.`r`n"
+    rules .= "номер = Снять номер: /take_number. Поставить: I - Использовать.`r`n"
+    rules .= "чат = /pagesize - строки, /fontsize - шрифт, /timestamp - время.`r`n"
+    rules .= "чат банд = Чат банды/семьи: /nfm - RP(IC), /fm - NRP(OOC).`r`n"
+    rules .= "гараж = Гаражные места по классам: Низкий - 1; Средний - 5; Высокий - до 17 мест.`r`n"
+    rules .= "киоск = Вернуть предметы: /return_items.`r`n"
+    rules .= "работ увол = Уволиться: /myjobs, /leave.`r`n"
+    rules .= "увол = Уволить игрока в онлайне - /unvinvite. | В оффлайне - /uninviteoff.`r`n"
+    rules .= "увал = Уволить игрока в онлайне - /unvinvite. | В оффлайне - /uninviteoff.`r`n"
+    rules .= "выйти семь = Покинуть семью: /family_leave.`r`n"
+    rules .= "выйти банд = Покинуть банду: /family_leave.`r`n"
+    rules .= "снять наручн = Снять наручники: /uncuff.`r`n"
+    rules .= "розыск = Выдать игроку розыск: /su.`r`n"
+    rules .= "наручн = Надеть наручники: /cuff.`r`n"
+    rules .= "чин = Не чиним автомобили. Вызывайте механиков(/c 090), либо используйте рем.комплект.`r`n"
+    rules .= "чен = Не чиним автомобили. Вызывайте механиков(/c 090), либо используйте рем.комплект.`r`n"
+    rules .= "пневм = Управлять пневмоподвеской: /spanel.`r`n"
+    rules .= "гидр = Включить/Выключить гидравлику: Кнопка H.`r`n"
+    rules .= "ключ = Передать ключи от машины: /allow.`r`n"
+    rules .= "аук = Аукцион идет 24ч с момента появления слота.`r`n"
+    rules .= "слет = Слет каждый час, с 8:00 до 23:00. Кроме отелей.`r`n"
+    rules .= "букс = Починить авто: /repair | Предложить буксировку на СТО: /tow | Подцепить машину: /at.`r`n"
+    rules .= "подцеп = Починить авто: /repair | Предложить буксировку на СТО: /tow | Подцепить машину: /at.`r`n"
+    rules .= "посмотреть мед = Посмотреть свою мед.карту: /showmc.`r`n"
+    rules .= "продать кв = Продать квартиру/дом игроку: /sellmyhome | Государству: /sellhome.`r`n"
+    rules .= "продать дом = Продать квартиру/дом игроку: /sellmyhome | Государству: /sellhome.`r`n"
+    rules .= "продать огород = Продать огород игроку: /sellmygarden | Государству: /sellgarden.`r`n"
+    rules .= "продать киоск = Продать киоск игроку: /sellmystall | Государству: /sellstall.`r`n"
+    rules .= "стил бо = Изменить стиль боя: /set_style`r`n"
+    rules .= "отм заказ = Отменить заказ механика: /to | Такси: /phone - Приложение такси.`r`n"
+    rules .= "отм вызов = Отменить вызов: /to.`r`n"
+    rules .= "приглас = Пригласить игрока в семью/банду/фракцию: /invite.`r`n"
+    rules .= "приглос = Пригласить игрока в семью/банду/фракцию: /invite.`r`n"
+    rules .= "инвайт = Пригласить игрока в семью/банду/фракцию: /invite.`r`n"
+    rules .= "принять = Пригласить игрока в семью/банду/фракцию: /invite.`r`n"
+    rules .= "выкин авто = Выкинуть игрока из своего авто: /eject | Выкинуть из авто(МВД, ФСБ): /ejectout.`r`n"
+    rules .= "спавн = Изменить место появления при заходе в игру: /setspawn.`r`n"
+    rules .= "спавн банд = Изменить место появления для банды: /gang_spawn.`r`n"
+    rules .= "авто банд = Добавить авто в банду: /gang_car.`r`n"
+    rules .= "уволить = Уволить игрока из фракции/банды/семьи: /uninvite.`r`n"
+    rules .= "ранг банд = Изменить игроку ранг в банде/семье: /frank.`r`n"
+    rules .= "ранг семь = Изменить игроку ранг в банде/семье: /frank.`r`n"
+    rules .= "ранг = Изменить ранг игроку во фракции: /rang.`r`n"
+    rules .= "выда мед = Выдать мед.карту игроку: /medcard.`r`n"
+    rules .= "раци = Рация организации/ТК: /r - RP(IC) | /rr - NRP(OOC).`r`n"
+    rules .= "заказы дальноб = Посмотреть активные заказы на работе дальнобойщика: /bizlist - продукты | /fuellist - топливо.`r`n"
+    rules .= "обмен = Чтобы провести обмен с игроком, нажмите: R - Персонаж - Обмен предметами.`r`n"
+    rules .= "обмен нотар = Провести обмен в нотариальном агенстве: /exchange.`r`n"
+    rules .= "багаж = Открыть багажник на личном авто: /trunk.`r`n"
+    rules .= "паспорт = Показать свой паспорт: /pass.`r`n"
+    rules .= "вб = Посмотреть военный билет: /pass.`r`n"
+    rules .= "воен билет = Посмотреть военный билет: /pass.`r`n"
+    rules .= "тест = Предложить тест-драйв игроку: /cm_test_drive.`r`n"
+    rules .= "шины = Поменять шины на авто: /replace_tire.`r`n"
+    rules .= "сигнал = Установить сигнализацию на авто: /set_alarm.`r`n"
+    rules .= "мп = Ожидайте. О проведении Мероприятия уведомят в чате.`r`n"
+    rules .= "рвс = Ожидайте. О проведении Респавна авто уведомят в чате.`r`n"
+    rules .= "рвц = Ожидайте. О проведении Респавна авто уведомят в чате.`r`n"
+    rules .= "респ = Ожидайте. О проведении Респавна авто уведомят в чате.`r`n"
+    rules .= "rwc = Ожидайте. О проведении Респавна авто уведомят в чате.`r`n"
+    rules .= "шкаф = Переставить шкаф: /makestore | Открыть: /use.`r`n"
+    rules .= "продать биз = Продать бизнес игроку: /sellmybiz | Государству: /sellbiz.`r`n"
+    rules .= "собес = Посмотреть активные события в игре: /events.`r`n"
+    rules .= "удост = Показать свое удостоверение: /doc.`r`n"
+    rules .= "сня брон = Снять бронежилет: /armoff.`r`n"
+    rules .= "акс = Снять все надетые аксессуары: /reset | Надеть: /put_on.`r`n"
+    rules .= "акс дом = Редактировать аксессуары дома/бизнеса: /pa_edit.`r`n"
+    rules .= "акс биз = Редактировать аксессуары дома/бизнеса: /pa_edit.`r`n"
+    rules .= "пожен = Предложение руки и сердца: /wedding | Развестись: /divorce.`r`n"
+    rules .= "развод = Предложение руки и сердца: /wedding | Развестись: /divorce.`r`n"
+    rules .= "свадьб = Чтобы сыграть свадьбу, необходимо купить обручальные кольца в магазине аксессуаров.`r`n"
+    rules .= "бой = Вызвать на бой другого игрока в спорт.зале: /fight.`r`n"
+    rules .= "выкл телеф = Включить/Выключить телефон: /togphone.`r`n"
+    rules .= "ч с фрак = Добавить в черный список организации: /blist.`r`n"
+    rules .= "ч с орг = Добавить в черный список организации: /blist.`r`n"
+    rules .= "ч с телеф = Добавить номер в черный список: /phone_black.`r`n"
+    rules .= "наказ = Посмотреть список наказаний: /alist | Если посадили в КПЗ/ФСИН: Радиальное меню(R) - другое - личное дело.`r`n"
+    rules .= "перев = Мы не переворачиваем авто. Используйте: /c 090, помощь друга (R - транспорт - перевернуть авто), домкрат.`r`n"
+    rules .= "бумбокс = Поставить бумбокс: /boombox_put | Поднять: /boombox_pick.`r`n"
+    rules .= "нарко = Продать наркотики: /selldrugs.`r`n"
+    rules .= "прод оруж = Продажа/Передача оружия производится через обмен. R - Персонаж - Обмен предметами.`r`n"
+    rules .= "тайм капт = Убрать таймер капта - /capture_timer.`r`n"
+    rules .= "капт биз = Провести войну за бизнес - /capture_biz.`r`n"
+    rules .= "наград = Посмотреть награды: /mn - Награды | Забрать отыграный промокод: /plist.`r`n"
+    rules .= "поворот голов = Включить/Выключить движение головы: /headmove.`r`n"
+    rules .= "подселить = Подселить человека - /live.`r`n"
+    rules .= "выписат = Выписаться из совместного проживания - /liveout.`r`n"
+    return rules
+}
+
+; === EnsureAnswerRulesFile: создает конфиг в Документах при отсутствии ===
+EnsureAnswerRulesFile() {
+    global scriptDir, answerRulesFile
+
+    ; Пользовательский файл никогда не перезаписываем — даже пустой.
+    if (FileExist(answerRulesFile))
+        return true
+
+    if (!FileExist(scriptDir)) {
+        FileCreateDir, %scriptDir%
+        if (ErrorLevel)
+            return false
+    }
+
+    ; Совместимость со старыми установками: перенести конфиг рядом с EXE/AHK.
+    legacyPath := A_ScriptDir . "\answer-rules.txt"
+    if (FileExist(legacyPath)) {
+        FileCopy, %legacyPath%, %answerRulesFile%, 0
+        if (FileExist(answerRulesFile))
+            return true
+    }
+
+    ; Для чистой установки всё встроено в ОДИН AHK/EXE.
+    defaultRules := DefaultAnswerRulesText()
+    if (defaultRules = "")
+        return false
+
+    ; Запись во временный файл: не оставлять обрезанный answer-rules.txt.
+    tempPath := answerRulesFile . ".tmp." . A_TickCount
+    FileDelete, %tempPath%
+    FileAppend, %defaultRules%, %tempPath%, UTF-8
+    if (ErrorLevel) {
+        FileDelete, %tempPath%
+        return false
+    }
+
+    ; Flag=0: ни при каких обстоятельствах не заменять существующий файл.
+    FileMove, %tempPath%, %answerRulesFile%, 0
+    moved := !ErrorLevel
+    if (!moved)
+        FileDelete, %tempPath%
+    return FileExist(answerRulesFile) ? true : false
+}
+
+
+; === LoadAnswerRules: служебная функция ===
+LoadAnswerRules() {
+    global answerMap, answerRulesFile, answerRulesLoaded, scriptDir
+    ; При необходимости создаёт встроенную базу при первом запуске.
+    if (!EnsureAnswerRulesFile()) {
+        answerRulesLoaded := false
+        return false
+    }
+
+    if (!FileExist(answerRulesFile)) {
+        answerRulesLoaded := false
+        return false
+    }
+    FileRead, rulesContent, *P65001 %answerRulesFile%
+    if (ErrorLevel)
+        return false
+    updated := {}
+    Loop, Parse, rulesContent, `n, `r
+    {
+        line := LTrim(Trim(A_LoopField, " `t"), Chr(0xFEFF))
+        if (line = "" || SubStr(line, 1, 1) = "#" || SubStr(line, 1, 1) = ";")
+            continue
+        separator := InStr(line, "=")
+        if (!separator)
+            continue
+        key := Trim(SubStr(line, 1, separator - 1))
+        value := Trim(SubStr(line, separator + 1))
+        if (key != "" && value != "")
+            updated[key] := value
+    }
+    ; Атомарно заменить таблицу, чтобы частичная запись не пропала при ошибке чтения.
+    answerMap := updated
+    answerRulesLoaded := true
+    return true
+}
+
+; === answerLogger: обработка новых репортов ===
 answerLogger() {
-    IniRead, kR, %settingsFile%, Keys, Reply
+    global settingsFile, answerMap, answerRulesLoaded, reportLog
+    global answerComplaint, answerCommand, ansLogID, ansAuthor, playerId
     global adminName, targetID, targetPunish
+    if (!reportLog)
+        return
+    if (!answerRulesLoaded)
+        LoadAnswerRules()
+    IniRead, kR, %settingsFile%, Keys, Reply
     targetPunish := ""
-    LineNumber := 0
-    answerMap := {}
-    answerMap["свалк"] := "Свалка: 7:00, 11:00, 14:00, 19:00, 23:00."
-    answerMap["конт"] := "Контейнеры: 8:00, 12:00, 16:00, 20:00, 00:00."
-    answerMap["адвокат"] := "Список адвокатов -> /adlist. Гражданское лицо: 15.000, гос.организации: 20.000, ОПГ/Банды: 30.000 р. (КПЗ), ФСИН: 30.000."
-    answerMap["лиц"] := "В Правительстве(/liclist). Права: 10.000; проф.права: 40.000; рыбалка: 40.000; охота: 65.000; оружие: 85.000 руб."
-    answerMap["мед"] := "Мед.карту можно получить в больнице г.Арзамас. Чтобы проверить медиков в сети, используйте: /medlist."
-    answerMap["номер"] := "Снять номер: /take_number. Поставить: I - Использовать."
-    answerMap["чат"] := "/pagesize - строки, /fontsize - шрифт, /timestamp - время."
-    answerMap["чат банд"] := "Чат банды/семьи: /nfm - RP(IC), /fm - NRP(OOC)."
-    answerMap["гараж"] := "Гаражные места по классам: Низкий - 1; Средний - 5; Высокий - до 17 мест."
-    answerMap["киоск"] := "Вернуть предметы: /return_items."
-    answerMap["работ увол"] := "Уволиться: /myjobs, /leave."
-    answerMap["увол"] := "Уволить игрока в онлайне - /unvinvite. | В оффлайне - /uninviteoff."
-    answerMap["увал"] := "Уволить игрока в онлайне - /unvinvite. | В оффлайне - /uninviteoff."
-    answerMap["выйти семь"] := "Покинуть семью: /family_leave."
-    answerMap["выйти банд"] := "Покинуть банду: /family_leave."
-    answerMap["снять наручн"] := "Снять наручники: /uncuff."
-    answerMap["розыск"] := "Выдать игроку розыск: /su."
-    answerMap["наручн"] := "Надеть наручники: /cuff."
-    answerMap["чин"] := "Не чиним автомобили. Вызывайте механиков(/c 090), либо используйте рем.комплект."
-    answerMap["чен"] := "Не чиним автомобили. Вызывайте механиков(/c 090), либо используйте рем.комплект."
-    answerMap["пневм"] := "Управлять пневмоподвеской: /spanel."
-    answerMap["гидр"] := "Включить/Выключить гидравлику: Кнопка H."
-    answerMap["ключ"] := "Передать ключи от машины: /allow."
-    answerMap["аук"] := "Аукцион идет 24ч с момента появления слота."
-    answerMap["слет"] := "Слет каждый час, с 8:00 до 23:00. Кроме отелей."
-    answerMap["букс"] := "Починить авто: /repair | Предложить буксировку на СТО: /tow | Подцепить машину: /at."
-    answerMap["подцеп"] := "Починить авто: /repair | Предложить буксировку на СТО: /tow | Подцепить машину: /at."
-    answerMap["посмотреть мед"] := "Посмотреть свою мед.карту: /showmc."
-    answerMap["продать кв"] := "Продать квартиру/дом игроку: /sellmyhome | Государству: /sellhome."
-    answerMap["продать дом"] := "Продать квартиру/дом игроку: /sellmyhome | Государству: /sellhome."
-    answerMap["продать огород"] := "Продать огород игроку: /sellmygarden | Государству: /sellgarden."
-    answerMap["продать киоск"] := "Продать киоск игроку: /sellmystall | Государству: /sellstall."
-    answerMap["стил бо"] := "Изменить стиль боя: /set_style"
-    answerMap["отм заказ"] := "Отменить заказ механика: /to | Такси: /phone - Приложение такси."
-    answerMap["отм вызов"] := "Отменить вызов: /to."
-    answerMap["приглас"] := "Пригласить игрока в семью/банду/фракцию: /invite."
-    answerMap["приглос"] := "Пригласить игрока в семью/банду/фракцию: /invite."
-    answerMap["инвайт"] := "Пригласить игрока в семью/банду/фракцию: /invite."
-    answerMap["принять"] := "Пригласить игрока в семью/банду/фракцию: /invite."
-    answerMap["выкин авто"] := "Выкинуть игрока из своего авто: /eject | Выкинуть из авто(МВД, ФСБ): /ejectout."
-    answerMap["спавн"] := "Изменить место появления при заходе в игру: /setspawn."
-    answerMap["спавн банд"] := "Изменить место появления для банды: /gang_spawn."
-    answerMap["авто банд"] := "Добавить авто в банду: /gang_car."
-    answerMap["уволить"] := "Уволить игрока из фракции/банды/семьи: /uninvite."
-    answerMap["ранг банд"] := "Изменить игроку ранг в банде/семье: /frank."
-    answerMap["ранг семь"] := "Изменить игроку ранг в банде/семье: /frank."
-    answerMap["ранг"] := "Изменить ранг игроку во фракции: /rang."
-    answerMap["выда мед"] := "Выдать мед.карту игроку: /medcard."
-    answerMap["раци"] := "Рация организации/ТК: /r - RP(IC) | /rr - NRP(OOC)."
-    answerMap["заказы дальноб"] := "Посмотреть активные заказы на работе дальнобойщика: /bizlist - продукты | /fuellist - топливо."
-    answerMap["обмен"] := "Чтобы провести обмен с игроком, нажмите: R - Персонаж - Обмен предметами."
-    answerMap["обмен нотар"] := "Провести обмен в нотариальном агенстве: /exchange."
-    answerMap["багаж"] := "Открыть багажник на личном авто: /trunk."
-    answerMap["паспорт"] := "Показать свой паспорт: /pass."
-    answerMap["вб"] := "Посмотреть военный билет: /pass."
-    answerMap["воен билет"] := "Посмотреть военный билет: /pass."
-    answerMap["тест"] := "Предложить тест-драйв игроку: /cm_test_drive."
-    answerMap["шины"] := "Поменять шины на авто: /replace_tire."
-    answerMap["сигнал"] := "Установить сигнализацию на авто: /set_alarm."
-    answerMap["мп"] := "Ожидайте. О проведении Мероприятия уведомят в чате."
-    answerMap["рвс"] := "Ожидайте. О проведении Респавна авто уведомят в чате."
-    answerMap["рвц"] := "Ожидайте. О проведении Респавна авто уведомят в чате."
-    answerMap["респ"] := "Ожидайте. О проведении Респавна авто уведомят в чате."
-    answerMap["rwc"] := "Ожидайте. О проведении Респавна авто уведомят в чате."
-    answerMap["шкаф"] := "Переставить шкаф: /makestore | Открыть: /use."
-    answerMap["продать биз"] := "Продать бизнес игроку: /sellmybiz | Государству: /sellbiz."
-    answerMap["собес"] := "Посмотреть активные события в игре: /events."
-    answerMap["удост"] := "Показать свое удостоверение: /doc."
-    answerMap["сня брон"] := "Снять бронежилет: /armoff."
-    answerMap["акс"] := "Снять все надетые аксессуары: /reset | Надеть: /put_on."
-    answerMap["акс дом"] := "Редактировать аксессуары дома/бизнеса: /pa_edit."
-    answerMap["акс биз"] := "Редактировать аксессуары дома/бизнеса: /pa_edit."
-    answerMap["пожен"] := "Предложение руки и сердца: /wedding | Развестись: /divorce."
-    answerMap["развод"] := "Предложение руки и сердца: /wedding | Развестись: /divorce."
-    answerMap["свадьб"] := "Чтобы сыграть свадьбу, необходимо купить обручальные кольца в магазине аксессуаров."
-    answerMap["бой"] := "Вызвать на бой другого игрока в спорт.зале: /fight."
-    answerMap["выкл телеф"] := "Включить/Выключить телефон: /togphone."
-    answerMap["ч с фрак"] := "Добавить в черный список организации: /blist."
-    answerMap["ч с орг"] := "Добавить в черный список организации: /blist."
-    answerMap["ч с телеф"] := "Добавить номер в черный список: /phone_black."
-    answerMap["наказ"] := "Посмотреть список наказаний: /alist | Если посадили в КПЗ/ФСИН: Радиальное меню(R) - другое - личное дело."
-    answerMap["перев"] := "Мы не переворачиваем авто. Используйте: /c 090, помощь друга (R - транспорт - перевернуть авто), домкрат."
-    answerMap["бумбокс"] := "Поставить бумбокс: /boombox_put | Поднять: /boombox_pick."
-    answerMap["нарко"] := "Продать наркотики: /selldrugs."
-    answerMap["прод оруж"] := "Продажа/Передача оружия производится через обмен. R - Персонаж - Обмен предметами."
-    answerMap["тайм капт"] := "Убрать таймер капта - /capture_timer."
-    answerMap["капт биз"] := "Провести войну за бизнес - /capture_biz."
-    answerMap["наград"] := "Посмотреть награды: /mn - Награды | Забрать отыграный промокод: /plist."
-    answerMap["поворот голов"] := "Включить/Выключить движение головы: /headmove."
-    answerMap["подселить"] := "Подселить человека - /live."
-    answerMap["выписат"] := "Выписаться из совместного проживания - /liveout."
+    ; Карта правил загружается при старте; повторного чтения в каждом тике нет.
     badWords := ["блят","сук","ебат","ебал","ебла","хуй","пизд","пидо","бляд","долб","заеб","неху","схуя","наеб","ахуе","охуе","поху","хуе"]
     badExpressions := {}
     badExpressions["даун"] := true
@@ -2242,19 +2765,14 @@ answerLogger() {
     badExpressions["лох"] := true
     badExpressions["деби"] := true
     badExpressions["дура"] := true
-    Loop, Read, %filePath%
-    {
-        LineNumber++
-        line := A_LoopReadLine
-        if (LineNumber < lastLineNum) {
-            continue
-        } if RegExMatch(line, "\[(RADMIR|HASSLE)\] (\w+_\w+)?\[(\d+)\]: (.+)", match) {
+    for _, line in ChatlogReadNew("reports") {
+        if RegExMatch(line, "\[(RADMIR|HASSLE)\] (\w+_\w+)?\[(\d+)\]: (.+)", match) {
             SetTimer, respondComplaint, Off
             SetTimer, respondCommand, Off
             Reports := match4
             ansLogID := match3
             ansAuthor := match2
-            global playerId := ansLogID
+            playerId := ansLogID
             StringLower, LoopLine, Reports
             Reports := RegExReplace(Reports, "\{[A-F0-9]{6}\}")
             hash := HashLine(line)
@@ -2306,33 +2824,18 @@ answerLogger() {
                     }
                 }
             }
-        } if (RegExMatch(line, "\[A\] (\w+)_(\w+)\[(\d+)\]: (.+)", match)) {
-            text := StrSplit(match4, " ")
-            adminName := " | " . SubStr(match1, 1, 1) . "." . match2
-            targetID := text[1]
-            if (InStr(text[2], "чит") || InStr(text[2], "cheat")) {
-                targetPunish := "/sban " . targetID . " 1 Исп. читов." . adminName
-            } else if (InStr(text[2], "бот") || InStr(text[2], "bot")) {
-                targetPunish := "/sban " . targetID . " 1 Исп. ботов." . adminName
-            } if (targetPunish) {
-                Sleep, 5335
-                SetTimer, issueAChatPunishment, 50
-                Sleep, 3553
-                SetTimer, issueAChatPunishment, Off
-            }
-            lastLineNum := LineNumber
         }
     }
-    lastLineNum := LineNumber
 }
 
 
+; === respondComplaint: служебная функция ===
 respondComplaint() {
+    global hotkeys, answerComplaint, playerId
     if hotkeys["Reply"] != "" {
         if GetKeyState(hotkeys["Reply"], "P") && GetKeyState("Enter", "P") {
             logTimersOff()
             Sleep, 100
-            global playerId
             SendMessage, 0x50,, 0x4190419,, A
             sendReply(playerId, answerComplaint)
             ToolTip("[𝐑𝐄𝐏𝐋𝐘] Игроку был дан ответ.", 3300)
@@ -2341,7 +2844,10 @@ respondComplaint() {
 }
 
 
+; === respondCommand: служебная функция ===
 respondCommand() {
+    global hotkeys, answerCommand, ansLogID, isHumanInput
+    global CMDDelay, InputDelay1, InputDelay2
     if hotkeys["Reply"] != "" {
         if GetKeyState(hotkeys["Reply"], "P") && GetKeyState("Enter", "P") {
             logTimersOff()
@@ -2369,255 +2875,31 @@ respondCommand() {
 }
 
 
-issueAChatPunishment() {
-    global adminName, targetID, targetPunish
-    ToolTip("[𝐒𝐂𝐑𝐈𝐏𝐓] ✎ Выдать " . targetPunish . "?", 3000)
-    if hotkeys["Reply"] != "" {
-        if (GetKeyState(hotkeys["Reply"], "P") && GetKeyState("Enter", "P")) {
-            SetTimer, issueAChatPunishment, Off
-            logTimersOff()
-            spTimersOff()
-            SendMessage, 0x50,, 0x4190419,, A
-            SendInput, {F6}%targetPunish%{Enter}
-        }
-    }
-}
-
-
-autoIssue:
-    autoIssue()
-Return
-
-autoIssue() {
-    static cmdLimits
-    static processedLines := []
-    if (!cmdLimits) {
-        cmdLimits := Object()
-        cmdLimits["/offjail"] := Object("limit", 4, "delay", 800, "wait", 70000)
-        cmdLimits["/jail"]    := Object("limit", 4, "delay", 800, "wait", 70000)
-        cmdLimits["/soffban"] := Object("limit", 2, "delay", 800, "wait", 90000)
-        cmdLimits["/offban"]  := Object("limit", 2, "delay", 800, "wait", 90000)
-        cmdLimits["/sban"]    := Object("limit", 2, "delay", 800, "wait", 90000)
-        cmdLimits["/ban"]     := Object("limit", 2, "delay", 800, "wait", 90000)
-        cmdLimits["/offwarn"] := Object("limit", 2, "delay", 800, "wait", 80000)
-        cmdLimits["/warn"]    := Object("limit", 2, "delay", 800, "wait", 80000)
-        cmdLimits["/mute"]    := Object("limit", 2, "delay", 800, "wait", 75000)
-        cmdLimits["/v_mute"]  := Object("limit", 2, "delay", 800, "wait", 75000)
-        cmdLimits["/fmute"]   := Object("limit", 2, "delay", 800, "wait", 75000)
-        cmdLimits["/rmute"]   := Object("limit", 2, "delay", 800, "wait", 75000)
-        cmdLimits["/kick"]    := Object("limit", 5, "delay", 800, "wait", 60000)
-        cmdLimits["/gunban"]  := Object("limit", 3, "delay", 800, "wait", 60000)
-        cmdLimits["/msg"]     := Object("limit", 50, "delay", 2050, "wait", 2050)
-    }
-    commands := Object()
-    idx := 0
-    Loop, Read, %autoIssueFile%
-    {
-        line := Trim(A_LoopReadLine, " `t")
-        if (line = "" || RegExMatch(line, "^(;|#|//|--)"))
-        continue
-        if RegExMatch(line, "^\s*(\/\w+)", m) {
-            idx++
-            commands[idx] := line
-        }
-    }
-    cmdGroups := Object()
-    for idx, cmdLine in commands {
-        if RegExMatch(cmdLine, "^\s*(\/\w+)", m) {
-            cmdType := m1
-            if !cmdGroups.HasKey(cmdType)
-            cmdGroups[cmdType] := Object()
-            nextIdx := cmdGroups[cmdType].MaxIndex() ? cmdGroups[cmdType].MaxIndex() + 1 : 1
-            cmdGroups[cmdType][nextIdx] := cmdLine
-        }
-    }
-    for cmdType, cmdList in cmdGroups {
-        limit := cmdLimits.HasKey(cmdType) ? cmdLimits[cmdType]["limit"] : 3
-        delay := cmdLimits.HasKey(cmdType) ? cmdLimits[cmdType]["delay"] : 800
-        wait := cmdLimits.HasKey(cmdType) ? cmdLimits[cmdType]["wait"] : 80000
-        total := cmdList.MaxIndex()
-        issuedCommands := 0
-        for i, cmdLine in cmdList {
-            RegExMatch(cmdLine, "^\s*(\/\w+)\s+([^\s]+)\s+(\d+)?\s*(.*)?", commandMatch)
-            cmdType := commandMatch1
-            nickName := commandMatch2
-            issueTime := commandMatch3
-            issueReason := commandMatch4
-            SendMessage, 0x50,, 0x4190419,, A
-            ToolTip("[𝐀𝐔𝐓𝐎-𝐈𝐒𝐒𝐔𝐄] Ввожу команду: " . cmdLine, 1000)
-            SendInput, ^a {BackSpace}{Enter}
-            Sleep, 100
-            SendInput, {F6}%cmdLine%{Enter}
-            issuedCommands++
-            Sleep, 430
-            Loop, Read, %filePath%
-            {
-                LineNumber++
-                line := A_LoopReadLine
-                if (LineNumber < autoIssueLastLineNum) {
-                    continue
-                } if (line ~= "Игрок с таким именем находится на сервере, используйте\s+.+" && !processedLines.HasKey(HashLine(line)) && !(cmdType = "/kick" || cmdType = "/msg" || cmdType = "/gunban" || cmdType = "/mute" || cmdType = "/v_mute" || cmdType = "/fmute" || cmdType = "/rmute")) {
-                    processedLines[HashLine(line)] := true
-                    ToolTip("[𝐀𝐔𝐓𝐎-𝐈𝐒𝐒𝐔𝐄] Введена команда: " . cmdLine . "`n↪️ Игрок " . nickName . " находится на сервере. Исключаю игрока...", 1000)
-                    SendMessage, 0x50,, 0x4190419,, A
-                    SendInput, ^a {BackSpace}{Enter}
-                    SendInput, {F6}/kick %nickName% Ожидайте наказания.{Enter}
-                    Sleep, delay
-                    ToolTip("[𝐀𝐔𝐓𝐎-𝐈𝐒𝐒𝐔𝐄] Введена команда: " . cmdLine . "`n↪️ Игрок " . nickName . " исключен. Выдаю наказание повторно...", 1000)
-                    SendInput, ^a {BackSpace}{Enter}
-                    SendInput, {F6}%cmdLine%{Enter}
-                    autoIssueLastLineNum := LineNumber
-                    Sleep, delay
-                    Loop, Read, %filePath%
-                    {
-                        LineNumber++
-                        if (LineNumber <= autoIssueLastLineNum)
-                        continue
-                        line := A_LoopReadLine
-                        if (InStr(line, "Этот игрок уже находится в тюрьме") && !processedLines.HasKey(HashLine(line))  && (cmdType = "/jail" || cmdType = "/offjail" || cmdType = "/kjail")) {
-                            processedLines[HashLine(line)] := true
-                            ToolTip("[𝐀𝐔𝐓𝐎-𝐈𝐒𝐒𝐔𝐄] Введена команда: " . cmdLine . "`n↪️ Игрок " . nickName . " уже в тюрьме. Получаю оставшееся время игрока...", 1000)
-                            SendMessage, 0x50,, 0x4190419,, A
-                            SendInput, ^a {BackSpace}{Enter}
-                            SendInput, {F6}/time %nickName%{Enter}
-                            autoIssueLastLineNum := LineNumber
-                            Sleep, delay
-                            Loop, Read, %filePath%
-                            {
-                                LineNumber++
-                                if (LineNumber <= autoIssueLastLineNum)
-                                continue
-                                line := A_LoopReadLine
-                                if (RegExMatch(line, "Время до выхода на свободу: (\d+):\d+", pTime) && !processedLines.HasKey(HashLine(line))) {
-                                    processedLines[HashLine(line)] := true
-                                    SendInput, ^a {BackSpace}{Enter}
-                                    SendInput, {F6}/unjail %nickName%{Enter}
-                                    ToolTip("[𝐀𝐔𝐓𝐎-𝐈𝐒𝐒𝐔𝐄] Время до выхода на свободу " . nickName . ": " . pTime1 . " сек. Добавляю это время к текущей выдаче...", 1000)
-                                    issueTime := issueTime + pTime1
-                                    issueReason := issueReason . "(перевыдано)"
-                                    Sleep, delay
-                                    SendMessage, 0x50,, 0x4190419,, A
-                                    SendInput, ^a {BackSpace}{Enter}
-                                    SendInput, {F6}%cmdType% %nickName% %issueTime% %issueReason%{Enter}
-                                    ToolTip("[𝐀𝐔𝐓𝐎-𝐈𝐒𝐒𝐔𝐄] Наказание успешно выдано.", 1000)
-                                    break
-                                }
-                            }
-                            break
-                        }
-                    }
-                    break
-                } if (InStr(line, "Этот игрок уже находится в тюрьме") && !processedLines.HasKey(HashLine(line)) && (cmdType = "/jail" || cmdType = "/offjail" || cmdType = "/kjail")) {
-                    processedLines[HashLine(line)] := true
-                    ToolTip("[𝐀𝐔𝐓𝐎-𝐈𝐒𝐒𝐔𝐄] Введена команда: " . cmdLine  . "`n↪️ Игрок " . nickName . " уже в тюрьме. Получаю оставшееся время игрока...", 1500)
-                    SendInput, ^a {BackSpace}{Enter}
-                    SendInput, {F6}/time %nickName%{Enter}
-                    autoIssueLastLineNum := LineNumber
-                    Sleep, 430
-                    Loop, Read, %filePath%
-                    {
-                        LineNumber++
-                        if (LineNumber <= autoIssueLastLineNum)
-                        continue
-                        line := A_LoopReadLine
-                        if (RegExMatch(line, "Время до выхода на свободу: (\d+):\d+", pTime) && !processedLines.HasKey(HashLine(line))) {
-                            processedLines[HashLine(line)] := true
-                            SendInput, ^a {BackSpace}{Enter}
-                            SendInput, {F6}/unjail %nickName%{Enter}
-                            ToolTip("[𝐀𝐔𝐓𝐎-𝐈𝐒𝐒𝐔𝐄] Время до выхода на свободу " . nickName . ": " . pTime1 . " сек. Добавляю это время к текущей выдаче...", 1000)
-                            issueTime := issueTime + pTime1
-                            issueReason := issueReason . "(перевыдано)"
-                            Sleep, delay
-                            SendInput, ^a {BackSpace}{Enter}
-                            SendInput, {F6}%cmdType% %nickName% %issueTime% %issueReason%{Enter}
-                            ToolTip("[𝐀𝐔𝐓𝐎-𝐈𝐒𝐒𝐔𝐄] Наказание успешно выдано.", 2000)
-                            break
-                        }
-                    }
-                    break
-                } if (InStr(line, "У этого игрока уже есть блокировка") && !processedLines.HasKey(HashLine(line))) {
-                    processedLines[HashLine(line)] := true
-                    if ((cmdType = "/mute" || cmdType = "/rmute" || cmdType = "/fmute")) {
-                        ToolTip("[𝐀𝐔𝐓𝐎-𝐈𝐒𝐒𝐔𝐄] У игрока " . nickName . " уже есть блокировка чата. Получаю оставшееся время...", 1500)
-                        SendInput, ^a {BackSpace}{Enter}
-                        SendInput, {F6}/time %nickName%{Enter}
-                        autoIssueLastLineNum := LineNumber
-                        Sleep, 430
-                        Loop, Read, %filePath%
-                        {
-                            LineNumber++
-                            if (LineNumber <= autoIssueLastLineNum)
-                            continue
-                            line := A_LoopReadLine
-                            if (RegExMatch(line, "Время до разблокировки (чата|репорта): (\d+):\d+", pTime) && !processedLines.HasKey(HashLine(line))) {
-                                processedLines[HashLine(line)] := true
-                                SendInput, ^a {BackSpace}{Enter}
-                                if (cmdType = "/mute") {
-                                    SendInput, {F6}/unmute %nickName%{Enter}
-                                } else if (cmdType = "/fmute") {
-                                    SendInput, {F6}/unfmute %nickName%{Enter}
-                                } else if (cmdType = "/rmute") {
-                                    SendInput, {F6}/unrmute %nickName%{Enter}
-                                }
-                                ToolTip("[𝐀𝐔𝐓𝐎-𝐈𝐒𝐒𝐔𝐄] Оставшееся время затычки " . nickName . ": " . pTime1 . " сек. Добавляю это время к текущей выдаче...", 1000)
-                                issueTime := issueTime + pTime1
-                                issueReason := issueReason . "(перевыдано)"
-                                Sleep, delay
-                                SendInput, ^a {BackSpace}{Enter}
-                                SendInput, {F6}%cmdType% %nickName% %issueTime% %issueReason%{Enter}
-                                ToolTip("[𝐀𝐔𝐓𝐎-𝐈𝐒𝐒𝐔𝐄] Наказание успешно выдано.", 1500)
-                                break
-                            }
-                        }
-                    }
-                } if (InStr(line, "Аккаунт с таким именем уже находится в бане") && !processedLines.HasKey(HashLine(line))) {
-                    processedLines[HashLine(line)] := true
-                    issuedCommands--
-                }
-            }
-            Sleep, delay
-            fwait := Round(wait/1000)
-
-            if (issuedCommands == limit && total > limit) {
-                ToolTip("[𝐀𝐔𝐓𝐎-𝐈𝐒𝐒𝐔𝐄] Достигнут лимит для " . cmdType . ". Ожидаю " . fwait . " секунд...", 3300)
-                issuedCommands := 0
-                Sleep, %wait%
-            }
-        }
-    }
-
-    if (total) {
-        ToolTip("[𝐀𝐔𝐓𝐎-𝐈𝐒𝐒𝐔𝐄] Все команды введены", 2000)
-        text := "# Тут можно вставить список наказаний, которые нужно выдать в игре. `n# Пример: /offjail Nick_Name 120 Жалоба на игрока 1`n`n"
-        FileDelete, %autoIssueFile%
-        FileAppend, %text%, %autoIssueFile%, UTF-8
-    } else {
-        ToolTip("[𝐀𝐔𝐓𝐎-𝐈𝐒𝐒𝐔𝐄] Файл пустой или не найден.", 2000)
-    }
-}
-
 
 autoEdit:
-    if (!active) {
-        lastReadLine := checkChatLog()
-        active := true
-        SetTimer, autoEditFunc, 50
+    ; AutoEdit и AutoBizlist имеют разные флаги — не выключают друг друга.
+    if (!autoEditActive) {
+        ChatlogWatchFromNow("autoedit")
+        autoEditActive := true
+        SetTimer, autoEditFunc, 150
         ToolTip("[𝐒𝐂𝐑𝐈𝐏𝐓] Функция AutoEdit включена. Ожидание нового объявления...", 2332)
     } else {
         SetTimer, autoEditFunc, Off
-        active := false
+        autoEditActive := false
+        ToolTip("[𝐒𝐂𝐑𝐈𝐏𝐓] Функция AutoEdit выключена.", 2000)
     }
 Return
 
 
+; === autoEditFunc: служебная функция ===
 autoEditFunc() {
-    Loop, Read, %filePath%
-    {
-        LineNumber++
-        line := A_LoopReadLine
-        if (LineNumber < lastReadLine) {
-            continue
-        } else if (line ~= "Добавлено новое объявление. Используйте: /edit для модерации") {
+    global autoEditActive, ChatIsOpen, requestCanRecall
+    ; Не отправлять /edit, если игра не активна или пользователь пишет в чат.
+    if (!autoEditActive || !WinActive("ahk_exe gta_sa.exe") || ChatIsOpen)
+        return
+    for _, line in ChatlogReadNew("autoedit") {
+        if (InStr(line, "Добавлено новое объявление. Используйте: /edit для модерации")) {
+            requestCanRecall := false
             SendInput, {F6}/edit{Enter}
             Sleep, 250
             SendInput, {Enter}
@@ -2627,31 +2909,28 @@ autoEditFunc() {
             SendInput, {Down}
             Sleep, 250
             SendInput, {Enter}
-            active := false
+            autoEditActive := false
             SetTimer, autoEditFunc, Off
-            lastReadLine := LineNumber
-            Break
+            break
         }
     }
 }
 
 
 global onOrder := false
-global isWaitingForLoad := false
 
 
 autoBizlist:
-    if (!active && !onOrder) {
-        lastReadLine := checkChatLog()
-        active := true
+    if (!autoBizlistActive && !onOrder) {
+        ChatlogWatchFromNow("orders")
+        autoBizlistActive := true
 
-        SetTimer, CatchingAnOrder, 30
-        SetTimer, WaitingForOrderInChat, 30
+        SetTimer, CatchingAnOrder, 250
+        SetTimer, WaitingForOrderInChat, 250
         ToolTip("[𝐒𝐂𝐑𝐈𝐏𝐓] Функция AutoBizlist включена. Ожидание нового заказа...", 2332)
     } else {
-        active := false
+        autoBizlistActive := false
         onOrder := false
-        productCount := 0
 
         SetTimer, CatchingAnOrder, Off
         SetTimer, WaitingForOrderInChat, Off
@@ -2661,19 +2940,27 @@ autoBizlist:
 Return
 
 
+; === CatchingAnOrder: ловля заказа по времени ===
 CatchingAnOrder() {
-    IniRead, minutesOfCatching1, %settingsFile%, Preset, minutesOfCatching1
-    IniRead, minutesOfCatching2, %settingsFile%, Preset, minutesOfCatching2
+    global autoBizlistActive, onOrder, ChatIsOpen, isHumanInput, requestCanRecall
+    static lastBizlistAttempt := 0
+    if (!autoBizlistActive || onOrder || ChatIsOpen || !WinActive("ahk_exe gta_sa.exe"))
+        return
 
+    IniRead, minutesOfCatching1, %settingsFile%, Preset, minutesOfCatching1, ERROR
+    IniRead, minutesOfCatching2, %settingsFile%, Preset, minutesOfCatching2, ERROR
+    ; Пока обе секунды не настроены, автоматизация молчит, а не спамит /bizlist.
+    if (!RegExMatch(minutesOfCatching1, "^\d{1,2}$") || !RegExMatch(minutesOfCatching2, "^\d{1,2}$"))
+        return
+    if (minutesOfCatching1 < 0 || minutesOfCatching1 > 59 || minutesOfCatching2 < 0 || minutesOfCatching2 > 59)
+        return
     isEven := (Mod(A_Min, 2) = 0)
-    
     if ((!isEven && A_Sec >= minutesOfCatching1) || (isEven && A_Sec < minutesOfCatching2)) {
-        if (onOrder) {
-            Return
-        } if (ChatIsOpen) {
-            SendInput, {BS 128}{Esc}
-            ChatIsOpen := false
-        } if (isHumanInput) {
+        ; Таймер работает часто, но отправляем не чаще раза в 5 секунд.
+        if (lastBizlistAttempt && (A_TickCount - lastBizlistAttempt) < 5000)
+            return
+        lastBizlistAttempt := A_TickCount
+        if (isHumanInput) {
             SendInput, {F6}
             Sleep, 150
             SendInput, /bizlist
@@ -2685,6 +2972,7 @@ CatchingAnOrder() {
             SendInput, {Enter}
             Sleep, 150
         } else if (!isHumanInput) {
+            requestCanRecall := false
             SendInput, {F6}/bizlist{Enter}
             Sleep, 150
             SendInput, {Enter}
@@ -2696,13 +2984,14 @@ CatchingAnOrder() {
 }
 
 
+; === WaitingForOrderInChat: ловля заказа по сообщению из чата ===
 WaitingForOrderInChat() {
-    Loop, Read, %filePath%
-    {
-        if (A_Index < lastReadLine) {
-            continue
-        } else if (A_LoopReadLine ~= "В компанию поступил новый заказ на поставку {FFFF00}продукции{ffffff}.") {
-            active := false
+    global autoBizlistActive, ChatIsOpen, requestCanRecall
+    if (!autoBizlistActive || ChatIsOpen || !WinActive("ahk_exe gta_sa.exe"))
+        return
+    for _, line in ChatlogReadNew("orders") {
+        if (IsNewTruckerOrderMessage(line)) {
+            autoBizlistActive := false
             SetTimer, CatchingAnOrder, Off
             SetTimer, WaitingForOrderInChat, Off
             Sleep, 50
@@ -2722,6 +3011,7 @@ WaitingForOrderInChat() {
                 SendInput, {Enter}
                 Sleep, 150
             } else if (!isHumanInput) {
+                requestCanRecall := false
                 SendInput, {F6}/bizlist{Enter}
                 Sleep, 150
                 SendInput, {Enter}
@@ -2734,24 +3024,25 @@ WaitingForOrderInChat() {
 }
 
 
+; === IsNewTruckerOrderMessage: распознавание нового формата уведомления ТК ===
+; Пример: [22:51:58] [Транспортная компания] {ffffff}Поступил новый заказ: продукци — 4320 ед. для Аптека 'Оптимальная'
+; Цветовые коды не влияют на распознавание; количество определяет сама игра.
+IsNewTruckerOrderMessage(line) {
+    clean := RegExReplace(line, "\{[0-9A-Fa-f]{6,8}\}", "")
+    if (!InStr(clean, "[Транспортная компания]"))
+        return false
+    return !!RegExMatch(clean, "Поступил новый заказ:\s*продукц[^0-9\r\n]*\d+\s*ед\.\s*для\s*\S")
+}
+
+
+; === ExpectationOfProfit: Таблица заработка ===
 ExpectationOfProfit() {
-    global lastReadLine, active, onOrder, productCount, isWaitingForLoad
+    global onOrder, autoBizlistActive
     
-    currentTotalLines := checkChatLog()
-    
-    if (currentTotalLines < lastReadLine) {
-        lastReadLine := 0
-    }
-
-    Loop, Read, %filePath%
-    {
-        if (A_Index < lastReadLine)
-            continue
-
-        lastReadLine := A_Index
-        
-        if (InStr(A_LoopReadLine, "Вы продали")) {
-            if (RegExMatch(A_LoopReadLine, "\{FFFFFF\}""(.*?)"" .*?\{FFFFFF\}(\d+) .*?\{FFFFFF\}(\d+)", match)) {
+    ; Экономика также обрабатывает только новые полные строки после запуска.
+    for _, line in ChatlogReadNew("profit") {
+        if (InStr(line, "Вы продали")) {
+            if (RegExMatch(line, "\{FFFFFF\}""(.*?)"" .*?\{FFFFFF\}(\d+) .*?\{FFFFFF\}(\d+)", match)) {
                 itemName  := match1
                 itemCount := match2
                 itemPrice := match3
@@ -2761,29 +3052,37 @@ ExpectationOfProfit() {
                 earnings := RegExReplace(itemPrice, "(\d)(?=(\d{3})+(?!\d))", "$1.")
                 ToolTip("[𝐒𝐂𝐑𝐈𝐏𝐓] Продано " . itemCount . " шт. Заработано: " . earnings . " руб.", 2000)
             }
-        } else if (InStr(A_LoopReadLine, "Вы доставили")) {
-            if RegExMatch(A_LoopReadLine, "доставили\s\{[a-z0-9]{6}\}(\d+).*?«\{[a-z0-9]{6}\}(.*?)\{[a-z0-9]{6}\}».*?получили\s\{[a-z0-9]{6}\}(\d+)", match) {
+        } else if (InStr(line, "Вы доставили")) {
+            ; Не записывать случайные строки "Вы доставили" с пустой/старой суммой.
+            matchedDelivery := false
+            if RegExMatch(line, "доставили\s\{[a-z0-9]{6}\}(\d+).*?«\{[a-z0-9]{6}\}(.*?)\{[a-z0-9]{6}\}».*?получили\s\{[a-z0-9]{6}\}(\d+)", match) {
                 itemCount := match1
                 shopName := match2
                 earnings := match3
-            } if RegExMatch(A_LoopReadLine, "Вы доставили\s\{[a-z0-9]{6}\}(\d+).*?получили за работу\s\{[a-z0-9]{6}\}(\d+)", match) {
+                matchedDelivery := true
+            } else if RegExMatch(line, "Вы доставили\s\{[a-z0-9]{6}\}(\d+).*?получили за работу\s\{[a-z0-9]{6}\}(\d+)", match) {
                 itemCount := match1
                 shopName := "Стройка 'Южный'"
                 earnings := match2
+                matchedDelivery := true
             }
+            if (!matchedDelivery)
+                continue
 
+            ; После подтвержденной доставки можно ловить следующий заказ.
+            onOrder := false
             FormatTime, CurrentTime,, dd.MM.yyyy HH:mm:ss
             LogString := CurrentTime . ", " . earnings . " руб, " . """Доставка продуктов, " . shopName . ": " . itemCount . " ед.""`n"
             FileAppend, %LogString%, %scriptDir%\orderHistory.csv, UTF-8
             TruckerIncome := GetIncomeByDate(A_DD . "." . A_MM . "." . A_YYYY, "Доставка продуктов")
             
             ToolTip("[𝐒𝐂𝐑𝐈𝐏𝐓] Доставлено " . itemCount . " ед. товара п/п: " . shopName . ". Прибыль: " . earnings . " руб. `n↪︎Общая прибыль за сегодня: " . TruckerIncome . " руб.", 11111)
-        } else if (InStr(A_LoopReadLine, "Вы начали выполнение заказа.")) {
+        } else if (InStr(line, "Вы начали выполнение заказа.")) {
             SetTimer, WaitingForOrderInChat, Off
             SetTimer, CatchingAnOrder, Off
 
             onOrder := true
-            active := false
+            autoBizlistActive := false
 
             SoundBeep, 1800, 100
             SoundBeep, 1800, 100
@@ -2796,36 +3095,23 @@ ExpectationOfProfit() {
                 ChatIsOpen := false
             }
 
-            SendInput, {F6}/bizlist{Enter}
-            Sleep, 150
-            SendInput, {Esc}
-            Sleep, 200
-
-            Loop, Read, %filePath%
-            {
-                if (A_Index < lastReadLine)
-                continue
-                lastReadLine := A_Index
-                if RegExMatch(A_LoopReadLine, "Грузовой {FFFF00}отсек пуст{ffffff}. Заказчику требуется {FFFF00}(\d+) ед.{ffffff}", match) {
-                    productCount := match1
-                }
-            }
-
-            ToolTip("[𝐒𝐂𝐑𝐈𝐏𝐓] Заказ найден. Клиенту требуется: " . productCount . " ед. товара", 3553)
-            isWaitingForLoad := true
+            ; Загрузка и ввод количества выполняются игрой автоматически.
+            ; Никаких дополнительных /bizlist, цифр или RShift после принятия заказа.
         }
     }
 }
 
-
+; === ToolTip: показ уведомления с учётом настроек ===
 ToolTip(text, delay) {
-    if (!isToolTipActive) {
+    global isToolTipActive
+    if (isToolTipActive) {
         ToolTip, %text%
         SetTimer, clearToolTip, -%delay%
     }
 }
 
 
+; === clearToolTip: служебная функция ===
 clearToolTip() {
     ToolTip
 }
@@ -2868,31 +3154,67 @@ return
 
 ~Enter::
 ~NumpadEnter::
+    ; Физический Enter из открытого чата меняет историю ввода.
+    if (ChatIsOpen && !requestBusy)
+        requestCanRecall := false
+    ChatIsOpen := false
+return
+
 ~Escape::
     ChatIsOpen := false
 return
 
 
-~RShift::
-if (isWaitingForLoad) {
-    threshold := orderOneGo ? 7100 : 5520
-    if (productCount > threshold) {
-        SendInput, {Enter}
-        Sleep, 150
-        SendInput, 5520{Enter}
-        productCount -= 5520
-        ToolTip("[𝐒𝐂𝐑𝐈𝐏𝐓] Загружается 5520 ед. товара. Остаток: " . productCount, 3223)
-    } else {
-        SendInput, {Enter}
-        Sleep, 150
-        SendInput, %productCount%{Enter}
-        ToolTip("[𝐒𝐂𝐑𝐈𝐏𝐓] Загружается " productCount . " ед. товара.", 3223)
-        productCount := 0
-        isWaitingForLoad := false
-        active := false
-        onOrder := false
-    }
-}
-return
 
 #If
+
+; === ReportDiagnostics: проверка настроек, таблицы ответов и последних строк ===
+; Ctrl+Shift+F10 не меняет курсор штатного читателя репортов.
+ReportDiagnostics() {
+    global filePath, settingsFile, reportLog, scriptMode, answerMap, answerRulesLoaded
+    global answerRulesFile, isToolTipActive
+    IniRead, storedReport, %settingsFile%, Preset, reportLog, ERROR
+    IniRead, storedMode, %settingsFile%, Preset, scriptMode, ERROR
+
+    ruleCount := IsObject(answerMap) ? answerMap.Count() : 0
+    fileState := FileExist(filePath) ? "файл найден" : "ФАЙЛ НЕ НАЙДЕН"
+    phantomFound := "нет"
+    reportParsed := "нет"
+    processedState := "нет репорта для проверки"
+    fileReadable := "нет"
+
+    if (FileExist(filePath)) {
+        source := FileOpen(filePath, 0x300, "CP0")
+        if (IsObject(source)) {
+            fileReadable := "да"
+            ; Берём последние 16 КБ, не двигая рабочий курсор ChatlogReadNew.
+            source.Pos := (source.Length > 16384) ? source.Length - 16384 : 0
+            tail := source.Read()
+            source.Close()
+            if (InStr(tail, "Debug_Player[99]"))
+                phantomFound := "да"
+            lastTestLine := ""
+            Loop, Parse, tail, `n, `r
+                if (InStr(A_LoopField, "Debug_Player[99]"))
+                    lastTestLine := A_LoopField
+            if (lastTestLine != "") {
+                lastTestHash := HashLine(lastTestLine)
+                IniRead, wasSeen, %settingsFile%, ProcessedLines, %lastTestHash%, ERROR
+                processedState := (wasSeen = "ERROR") ? "ещё не отмечен" : "отмечен как обработанный"
+            }
+            if (RegExMatch(tail, "\[(RADMIR|HASSLE)\] (\w+_\w+)?\[(\d+)\]: (.+)"))
+                reportParsed := "да"
+        }
+    }
+    result := "ПУТЬ: " . filePath
+      . "`nФайл: " . fileState . ", чтение: " . fileReadable
+      . "`nФантом найден в последних 16 КБ: " . phantomFound
+      . "`nФантом в ProcessedLines: " . processedState
+      . "`nЕсть строка формата RADMIR: " . reportParsed
+      . "`nРежим: " . scriptMode . " (INI: " . storedMode . ")"
+      . "`nЛог жалоб: " . reportLog . " (INI: " . storedReport . ")"
+      . "`nОтветы загружены: " . answerRulesLoaded . "; правил: " . ruleCount
+      . "`nФайл правил: " . answerRulesFile
+      . "`nПодсказки: " . isToolTipActive
+    MsgBox, 64, ViMeLlY Report Diagnostics, %result%
+}
