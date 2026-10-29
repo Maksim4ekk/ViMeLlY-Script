@@ -8,7 +8,7 @@ SetBatchLines, -1
 SendMode Input
 SetWorkingDir %A_ScriptDir%
 
-global version := "v 1.7.0"
+global version := "v 1.7.1"
 global LicenseURL := "aHR0cHM6Ly9naXN0LmdpdGh1YnVzZXJjb250ZW50LmNvbS9NYWtzaW00ZWtrL2Jl`nMmQ0MjE5MzE1NjFkZDAxYjQzM2Y5M2NhNTMyOWQwL3Jhdy9WaU1lTGxZLWtleXMu`ndHh0"
 
 
@@ -46,6 +46,11 @@ global truckerSettings := false
 global scriptSettings := false
 global isToolTipActive
 global today := A_DD . "." . A_MM . "." . A_YYYY
+global menuNavItems := []
+global menuNavIndex := 0
+global menuNavGuiName := ""
+global menuNavGuiHwnd := 0
+OnMessage(0x21, "MenuMouseActivate") ; кнопки не активируют меню, поля ввода могут получить фокус
 
 ; Инициализация выполняется один раз, НЕ зависит от GitHub или обновлений.
 SetTimer, InitializeViMeLlY, -50
@@ -208,6 +213,7 @@ checkLicenseKey() {
     }
     if (IsValid) {
         IniWrite, %SavedKey%, %settingsFile%, License, Key
+        IniWrite, %scriptType%, %settingsFile%, Preset, scriptMode
         IniRead, storedMode, %settingsFile%, Preset, scriptMode, %A_Space%
         storedMode := Trim(storedMode)
         if (storedMode != "" && storedMode != scriptType) {
@@ -604,6 +610,190 @@ guiColorFunc() {
 }
 
 
+; === ShowMenuNoActivate: показать меню поверх окон, не забирая фокус у игры ===
+ShowMenuNoActivate(guiName) {
+    global menuNavGuiName, menuNavGuiHwnd
+
+    Gui, %guiName%:+AlwaysOnTop
+    Gui, %guiName%:Show, NA AutoSize
+    Gui, %guiName%:+LastFound
+    hwnd := WinExist()
+    if (!hwnd)
+        return
+
+    WinGetPos,,, winW, winH, ahk_id %hwnd%
+    x := (A_ScreenWidth - winW) // 2
+    y := 18
+    WinMove, ahk_id %hwnd%,, %x%, %y%
+    WinSet, AlwaysOnTop, On, ahk_id %hwnd%
+    WinSet, Transparent, 233, ahk_id %hwnd%
+
+    menuNavGuiName := guiName
+    menuNavGuiHwnd := hwnd
+    InitMenuKeyboard(hwnd)
+}
+
+
+; === InitMenuKeyboard: собрать кнопки текущего меню для клавиатурной навигации ===
+InitMenuKeyboard(hwnd) {
+    global menuNavItems, menuNavIndex
+
+    menuNavItems := []
+    menuNavIndex := 0
+    WinGet, controls, ControlList, ahk_id %hwnd%
+    Loop, Parse, controls, `n, `r
+    {
+        controlName := A_LoopField
+        if (!RegExMatch(controlName, "i)^Button\d+$"))
+            continue
+
+        ControlGet, controlHwnd, Hwnd,, %controlName%, ahk_id %hwnd%
+        if (!controlHwnd)
+            continue
+        ControlGetText, controlText, %controlName%, ahk_id %hwnd%
+        WinGet, controlStyle, Style, ahk_id %controlHwnd%
+        controlType := controlStyle & 0xF
+        menuNavItems.Push({hwnd: controlHwnd, text: controlText, type: controlType})
+    }
+
+    if (menuNavItems.Length())
+        MenuKeyboardSelect(1)
+    else
+        MenuKeyboardUpdateHint("")
+}
+
+
+; === MenuKeyboardSelect: выбрать элемент и подсветить текущую кнопку ===
+MenuKeyboardSelect(index) {
+    global menuNavItems, menuNavIndex
+
+    count := menuNavItems.Length()
+    if (!count)
+        return
+
+    if (menuNavIndex >= 1 && menuNavIndex <= count) {
+        previous := menuNavItems[menuNavIndex]
+        if (previous.type = 0 || previous.type = 1) {
+            previousHwnd := previous.hwnd
+            previousType := previous.type
+            SendMessage, 0x00F4, %previousType%, 1,, ahk_id %previousHwnd%
+        }
+    }
+
+    while (index < 1)
+        index += count
+    while (index > count)
+        index -= count
+    menuNavIndex := index
+
+    selected := menuNavItems[menuNavIndex]
+    selectedHwnd := selected.hwnd
+    if (selected.type = 0 || selected.type = 1)
+        SendMessage, 0x00F4, 1, 1,, ahk_id %selectedHwnd%
+
+    MenuKeyboardUpdateHint(selected.text)
+}
+
+
+; === MenuKeyboardUpdateHint: показать выбранный пункт внизу меню ===
+MenuKeyboardUpdateHint(selectedText) {
+    global menuNavGuiName
+    if (menuNavGuiName = "")
+        return
+    if (selectedText = "")
+        selectionText := "Выберите пункт стрелками или Tab"
+    else
+        selectionText := "Выбрано: " . selectedText
+    GuiControl, %menuNavGuiName%:, MenuKeyboardSelection, %selectionText%
+}
+
+
+; === MenuKeyboardEnabled: клавиатурное управление активно только для видимого меню ===
+MenuKeyboardEnabled() {
+    global menuNavGuiHwnd
+    if (!menuNavGuiHwnd || !WinExist("ahk_id " . menuNavGuiHwnd))
+        return false
+    WinGet, windowStyle, Style, ahk_id %menuNavGuiHwnd%
+    if (!(windowStyle & 0x10000000))
+        return false
+
+    ; Если пользователь кликнул в поле ввода, клавиатура должна редактировать его,
+    ; а не перемещать выбор по кнопкам меню.
+    if (WinActive("ahk_id " . menuNavGuiHwnd)) {
+        ControlGetFocus, focusedControl, ahk_id %menuNavGuiHwnd%
+        if (RegExMatch(focusedControl, "i)^(Edit|msctls_hotkey|ComboBox)"))
+            return false
+    }
+    return true
+}
+
+
+; === MenuMouseActivate: клики по кнопкам не забирают фокус у игры ===
+MenuMouseActivate(wParam, lParam, msg, hwnd) {
+    global menuNavGuiHwnd
+    if (hwnd != menuNavGuiHwnd)
+        return
+
+    VarSetCapacity(point, 8, 0)
+    if (!DllCall("GetCursorPos", "Ptr", &point))
+        return 3
+    pointValue := NumGet(point, 0, "Int64")
+    childHwnd := DllCall("WindowFromPoint", "Int64", pointValue, "Ptr")
+    if (!childHwnd)
+        return 3
+
+    WinGetClass, className, ahk_id %childHwnd%
+    if (RegExMatch(className, "i)^(Edit|msctls_hotkey|ComboBox)"))
+        return 1 ; MA_ACTIVATE — поля редактирования должны получать ввод
+    return 3 ; MA_NOACTIVATE — кнопка срабатывает без активации окна
+}
+
+
+; === MenuNavigate: перемещение выбора по кнопкам меню ===
+MenuNavigate(step) {
+    global menuNavIndex
+    if (!MenuKeyboardEnabled())
+        return
+    MenuKeyboardSelect(menuNavIndex + step)
+}
+
+
+; === MenuActivateSelected: выполнить выбранную кнопку без активации окна игры ===
+MenuActivateSelected() {
+    global menuNavItems, menuNavIndex
+    if (!MenuKeyboardEnabled() || menuNavIndex < 1 || menuNavIndex > menuNavItems.Length())
+        return
+    selected := menuNavItems[menuNavIndex]
+    selectedHwnd := selected.hwnd
+    PostMessage, 0x00F5, 0, 0,, ahk_id %selectedHwnd%
+}
+
+
+; === ReturnToMainMenu: вернуться из подменю в главное ===
+ReturnToMainMenu() {
+    Gui, ViMeLlYAnswers:Destroy
+    Gui, ViMeLlYHotKeys:Destroy
+    Gui, ViMeLlYStats:Destroy
+    ShowMenuNoActivate("ViMeLlY")
+}
+
+
+; === CloseMenuWindows: закрыть меню, не завершая работу скрипта ===
+CloseMenuWindows() {
+    global menuNavGuiName, menuNavGuiHwnd, menuNavItems, menuNavIndex
+    Gui, ViMeLlY:Destroy
+    Gui, ViMeLlYHotKeys:Destroy
+    Gui, ViMeLlYAnswers:Destroy
+    Gui, ViMeLlYStats:Destroy
+    SetTimer, SaveHotkeys, Off
+    SetTimer, SaveAnswers, Off
+    menuNavGuiName := ""
+    menuNavGuiHwnd := 0
+    menuNavItems := []
+    menuNavIndex := 0
+}
+
+
 Menu:
     guiColorFunc()
     ansLogStatus := reportLog ? "✔ Лог жалоб" : "✘ Лог жалоб"
@@ -643,7 +833,6 @@ Menu:
 
     Gui, ViMeLlY:Font, s7, Comic Sans MS
     if (scriptMode == "Admin") {
-        ; Удалён экспериментальный массовый модуль; остальное меню сохранено.
         Gui, ViMeLlY:Add, Button, xm y+1 w143 gAnswers,⚙️ Настройки ответов྾
         Gui, ViMeLlY:Add, Button, x+1 yp w174 gOpenPunishHelper, 👁️ Помощник наказаний
         Gui, ViMeLlY:Add, Button, x+1 yp w61 gOpenAdditionalFeatures, 👁️ Доп.
@@ -724,10 +913,14 @@ Menu:
         Gui, ViMeLlY:Add, Text, x25 y+3 w380,° ≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡≡ °
     }
 
+    Gui, ViMeLlY:Font, s9, Comic Sans MS
+    Gui, ViMeLlY:Add, Text, x17 y+0 w381 h14 Center vMenuKeyboardSelection, Выберите пункт стрелками или Tab
+    Gui, ViMeLlY:Font, s7, Comic Sans MS 
+    Gui, ViMeLlY:Add, Text, x17 y+4 w381 h14 Center vMenuKeyboardHint, ↑ ↓ ← → / Tab — выбор • Enter — выполнить • Esc — назад/закрыть
+    Gui, ViMeLlY:Add, Button, x17 y+2 w381 h21 gResetLicenseKey, 🔑 Сбросить ключ доступа
     Gui, ViMeLlY:Font, s7 Bold, Comic Sans MS
-    Gui, ViMeLlY:Add, Link, x25 y+7, ≣≣≣ ❤ <a href="https://t.me/+1eeJ_8vhugYyNmMy">ViMeLlY Script (%version%)</a> | Приятного пользования. ❤ ≣≣≣
-    Gui, ViMeLlY:Show
-    WinSet, Transparent, 233, A
+    Gui, ViMeLlY:Add, Link, x25 y+5, ≣≣≣ ❤ <a href="https://t.me/+1eeJ_8vhugYyNmMy">ViMeLlY Script (%version%)</a> | Приятного пользования. ❤ ≣≣≣
+    ShowMenuNoActivate("ViMeLlY")
 Return
 
 
@@ -808,9 +1001,12 @@ HotKeys:
     Gui, ViMeLlYHotKeys:Add, Text, yp x+0 w125 Center,Отключение скрипта
     Gui, ViMeLlYHotKeys:Add, Edit, x185 yp h18 +0x200 w100 ReadOnly, Ctrl + Alt + Esc
     Gui, ViMeLlYHotKeys:Add, Text, yp x+10, ‖ Ctrl + Alt + Esc
+    Gui, ViMeLlYHotKeys:Font, s7, Comic Sans MS
+    Gui, ViMeLlYHotKeys:Add, Text, x25 y+4 w400 h14 Center vMenuKeyboardHint, ↑ ↓ ← → / Tab — выбор • Enter — выполнить • Esc — назад/закрыть
+    Gui, ViMeLlYHotKeys:Add, Text, x25 y+0 w400 h14 Center vMenuKeyboardSelection, Выберите пункт стрелками или Tab
     Gui, ViMeLlYHotKeys:Font, s7 Bold, Comic Sans MS
-    Gui, ViMeLlYHotKeys:Add, Link, x55 y+7, ≣≣≣ ❤ <a href="https://t.me/+1eeJ_8vhugYyNmMy">ViMeLlY Script (%version%)</a> | Приятного пользования. ❤ ≣≣≣
-    Gui, ViMeLlYHotKeys:Show
+    Gui, ViMeLlYHotKeys:Add, Link, x55 y+5, ≣≣≣ ❤ <a href="https://t.me/+1eeJ_8vhugYyNmMy">ViMeLlY Script (%version%)</a> | Приятного пользования. ❤ ≣≣≣
+    ShowMenuNoActivate("ViMeLlYHotKeys")
 
     SetTimer, SaveHotkeys, 150  
 Return
@@ -882,9 +1078,12 @@ Answers:
     Gui, ViMeLlYAnswers:Add, Edit, x100 yp h17 Limit128 +0x200 w290 vAns_0, %Ans0%
     Gui, ViMeLlYAnswers:Add, Text, y+1 x25, Offline »
     Gui, ViMeLlYAnswers:Add, Edit, x100 yp h17 Limit128 +0x200 w290 vAns_Off, %AnsOff%
+    Gui, ViMeLlYAnswers:Font, s7, Comic Sans MS
+    Gui, ViMeLlYAnswers:Add, Text, x25 y+4 w380 h14 Center vMenuKeyboardHint, ↑ ↓ ← → / Tab — выбор • Enter — выполнить • Esc — назад/закрыть
+    Gui, ViMeLlYAnswers:Add, Text, x25 y+0 w380 h14 Center vMenuKeyboardSelection, Выберите пункт стрелками или Tab
     Gui, ViMeLlYAnswers:Font, s7 Bold, Comic Sans MS
-    Gui, ViMeLlYAnswers:Add, Link, x45 y+7, ≣≣≣ ❤ <a href="https://t.me/+1eeJ_8vhugYyNmMy">ViMeLlY Script (%version%)</a> | Приятного пользования. ❤ ≣≣≣
-    Gui, ViMeLlYAnswers:Show
+    Gui, ViMeLlYAnswers:Add, Link, x45 y+5, ≣≣≣ ❤ <a href="https://t.me/+1eeJ_8vhugYyNmMy">ViMeLlY Script (%version%)</a> | Приятного пользования. ❤ ≣≣≣
+    ShowMenuNoActivate("ViMeLlYAnswers")
 
     SetTimer, SaveAnswers, 300
 Return
@@ -934,13 +1133,16 @@ AdminStatsPanel:
     Gui, ViMeLlYStats:Add, Edit, x+3 h18 yp w145 ReadOnly Center vSearchResultAdmin, Пусто
     Gui, ViMeLlYStats:Add, Text, x27 y+1 w200,- Jail'ов: %changeJails%
     Gui, ViMeLlYStats:Add, Button, x+3 yp h18 w145 gClearAnswers, Сбросить статистику
+    Gui, ViMeLlYStats:Font, s7, Comic Sans MS
+    Gui, ViMeLlYStats:Add, Text, x25 y+4 w380 h14 Center vMenuKeyboardHint, ↑ ↓ ← → / Tab — выбор • Enter — выполнить • Esc — назад/закрыть
+    Gui, ViMeLlYStats:Add, Text, x25 y+0 w380 h14 Center vMenuKeyboardSelection, Выберите пункт стрелками или Tab
     Gui, ViMeLlYStats:Font, s7 Bold, Comic Sans MS
-    Gui, ViMeLlYStats:Add, Link, x45 y+7, ≣≣≣ ❤ <a href="https://t.me/+1eeJ_8vhugYyNmMy">ViMeLlY Script (%version%)</a> | Приятного пользования. ❤ ≣≣≣
+    Gui, ViMeLlYStats:Add, Link, x45 y+5, ≣≣≣ ❤ <a href="https://t.me/+1eeJ_8vhugYyNmMy">ViMeLlY Script (%version%)</a> | Приятного пользования. ❤ ≣≣≣
     
     if (userNickname != "ERROR" && userNickname != "") {
         if (adminStatsStatus) {
             Gui, ViMeLlY:Hide
-            Gui, ViMeLlYStats:Show
+            ShowMenuNoActivate("ViMeLlYStats")
         } else {
             Tooltip, [𝐒𝐂𝐑𝐈𝐏𝐓] Функция статистики в данный момент отключена.
             Sleep, 2332
@@ -1267,22 +1469,29 @@ Return
 
 
 Back:
-    Gui, ViMeLlYAnswers:Destroy
-    Gui, ViMeLlYHotKeys:Destroy
-    Gui, ViMeLlYStats:Destroy
-    Gui, ViMeLlY:Show
+    ReturnToMainMenu()
 Return
 
 
 ViMeLlYGuiEscape:
 Close:
-    Gui, ViMeLlY:Destroy
-    Gui, ViMeLlYHotKeys:Destroy
-    Gui, ViMeLlYAnswers:Destroy
-    Gui, ViMeLlYStats:Destroy
-    
-    SetTimer, SaveHotkeys, Off
-    SetTimer, SaveAnswers, Off
+    CloseMenuWindows()
+Return
+
+
+ResetLicenseKey:
+    MsgBox, 52, Сброс ключа доступа, Удалить сохранённый ключ доступа из настроек?`n`nПосле подтверждения скрипт перезапустится и попросит ввести ключ повторно.
+    IfMsgBox, No
+        Return
+
+    IniDelete, %settingsFile%, License, Key
+    IniDelete, %settingsFile%, Preset, scriptMode
+    IniRead, remainingKey, %settingsFile%, License, Key, __MISSING__
+    if (remainingKey != "__MISSING__") {
+        MsgBox, 16, Ошибка, Не удалось удалить сохранённый ключ доступа.
+        Return
+    }
+    Reload
 Return
 
 
@@ -3152,16 +3361,38 @@ Return
 return
 
 
-~Enter::
-~NumpadEnter::
-    ; Физический Enter из открытого чата меняет историю ввода.
+Enter::
+    ; Пока меню открыто, Enter выполняет выбранную кнопку и не передаётся игре.
+    if (MenuKeyboardEnabled()) {
+        MenuActivateSelected()
+        return
+    }
+    ; В обычном режиме сохраняем исходное поведение игрового Enter.
     if (ChatIsOpen && !requestBusy)
         requestCanRecall := false
     ChatIsOpen := false
+    SendInput, {Enter}
 return
 
-~Escape::
+NumpadEnter::
+    if (MenuKeyboardEnabled()) {
+        MenuActivateSelected()
+        return
+    }
+    if (ChatIsOpen && !requestBusy)
+        requestCanRecall := false
     ChatIsOpen := false
+    SendInput, {NumpadEnter}
+return
+
+Escape::
+    ; Esc закрывает меню/возвращает назад, иначе передаётся игре.
+    if (MenuKeyboardEnabled()) {
+        MenuKeyboardEscape()
+        return
+    }
+    ChatIsOpen := false
+    SendInput, {Escape}
 return
 
 
@@ -3217,4 +3448,29 @@ ReportDiagnostics() {
       . "`nФайл правил: " . answerRulesFile
       . "`nПодсказки: " . isToolTipActive
     MsgBox, 64, ViMeLlY Report Diagnostics, %result%
+}
+
+
+; === Keyboard navigation for non-activating always-on-top menus ===
+#If MenuKeyboardEnabled()
+Up::MenuNavigate(-1)
+Down::MenuNavigate(1)
+Left::MenuNavigate(-1)
+Right::MenuNavigate(1)
+Tab::MenuNavigate(1)
++Tab::MenuNavigate(-1)
+Enter::MenuActivateSelected()
+NumpadEnter::MenuActivateSelected()
+Esc::MenuKeyboardEscape()
+#If
+
+; === MenuKeyboardEscape: Esc closes main menu or returns from a submenu ===
+MenuKeyboardEscape() {
+    global menuNavGuiName
+    if (!MenuKeyboardEnabled())
+        return
+    if (menuNavGuiName = "ViMeLlY")
+        CloseMenuWindows()
+    else
+        ReturnToMainMenu()
 }
