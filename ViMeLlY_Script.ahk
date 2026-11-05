@@ -8,7 +8,7 @@ SetBatchLines, -1
 SendMode Input
 SetWorkingDir %A_ScriptDir%
 
-global version := "v 1.7.4"
+global version := "v 1.7.5"
 global LicenseURL := "aHR0cHM6Ly9naXN0LmdpdGh1YnVzZXJjb250ZW50LmNvbS9NYWtzaW00ZWtrL2Jl`nMmQ0MjE5MzE1NjFkZDAxYjQzM2Y5M2NhNTMyOWQwL3Jhdy9WaU1lTGxZLWtleXMu`ndHh0"
 
 global repID, ansID, ansLogID
@@ -131,6 +131,7 @@ InitializeViMeLlY() {
     ChatlogWatchFromNow("profit")
     LoadHotkeys()
     BindHotkeys()
+    SetTimer, ChatStateWatch, 300
     if (scriptMode = "Admin") {
         if (reportLog)
             SetTimer, answerLogger, 500
@@ -689,6 +690,9 @@ HintShow(item) {
     }
     built.num := 39
     built.kind := kind
+    ; Кому и что отправлять по Reply + Enter: берётся из показанной подсказки, а не из общих переменных.
+    built.target := item.id
+    built.replyText := item.reply
     built.until := A_TickCount + dur
     built.total := dur
     ntfHint := built
@@ -1013,6 +1017,16 @@ AutomationQueueChat(command, allowAny := false) {
     SetTimer, AutomationProcessQueue, 40
     return true
 }
+
+; === ChatStateWatch: сбрасывает признак «чат открыт», когда игра потеряла фокус ===
+; Признак ставится по T/F6 и снимается только по Enter/Esc в игре. Если уйти в другое приложение с открытым чатом,
+; он оставался включённым и блокировал автозапрос, автоответ и автоотправку команд, пока не нажать Enter/Esc.
+ChatStateWatch() {
+    global ChatIsOpen, requestBusy
+    if (ChatIsOpen && !requestBusy && !WinActive("ahk_exe gta_sa.exe"))
+        ChatIsOpen := false
+}
+
 
 ; === AutomationProcessQueue: последовательная отправка команд ===
 AutomationProcessQueue() {
@@ -3232,12 +3246,16 @@ Request:
         SendMessage, 0x50,, 0x4190419,, A
         SendInput, {F6}/z (ид запроса вводится){Space}
         idRead := RequestReadId()
-        ; Очистка ввода в чате без лишнего Esc (не открыть pause menu).
-        SendInput, ^a{Backspace}
+        ; Очистка ввода в чате без лишнего Esc (не открыть pause menu). Только при активной игре:
+        ; иначе Ctrl+A и Backspace стёрли бы текст в другом приложении.
+        if (WinActive("ahk_exe gta_sa.exe"))
+            SendInput, ^a{Backspace}
         if (idRead.status != "enter" || !RegExMatch(idRead.id, "^[1-9][0-9]{0,11}$")) {
             lastRequest := ""
             requestBusy := false
-            if (idRead.status = "esc")
+            if (idRead.status = "away")
+                ToolTip("[REQUEST] Ввод ID прерван: окно игры не в фокусе.", 2500)
+            else if (idRead.status = "esc")
                 ToolTip("[REQUEST] Ввод ID отменён.", 2000)
             else if (idRead.status = "timeout")
                 ToolTip("[REQUEST] Время ожидания ID истекло.", 2500)
@@ -3268,6 +3286,11 @@ Request:
             change := RequestChangeDigits(requestLastSent, nextRequest)
             SendInput, {F6}
             Sleep, 90
+            if (!WinActive("ahk_exe gta_sa.exe")) {
+                ToolTip("[REQUEST] Окно игры потеряло фокус, запрос прерван.", 2500)
+                requestBusy := false
+                Return
+            }
             if (requestCanRecall) {
                 ; ↑ поднимает последнюю /z без повторного ввода всей команды.
                 SendInput, {Up}{End}
@@ -3291,6 +3314,12 @@ Request:
             RequestTypeChangedDigits(nextRequest)
         }
         Sleep, 65
+        ; Enter — только если игра всё ещё в фокусе (иначе он ушёл бы в другое приложение, а счётчик сдвинулся бы зря).
+        if (!WinActive("ahk_exe gta_sa.exe")) {
+            ToolTip("[REQUEST] Окно игры потеряло фокус, запрос не отправлен.", 2500)
+            requestBusy := false
+            Return
+        }
         SendInput, {Enter}
     } else {
         ; Автоматический режим не меняем.
@@ -3325,7 +3354,8 @@ RequestRejected() {
 
 ; === RequestReadId: читает ID, который администратор набирает в чате (Enter — готово, Esc — отмена, 40 с на ввод) ===
 ; Работает опросом физических клавиш, а не командой Input: так на ввод не влияют хоткеи Enter/Esc этого скрипта.
-; Возврат: {id: набранные цифры, status: "enter" | "esc" | "timeout"}.
+; Если окно игры потеряло фокус (переключились в другое приложение) — ввод прерывается, а не ждёт все 40 с и не читает клавиши чужого окна.
+; Возврат: {id: набранные цифры, status: "enter" | "esc" | "timeout" | "away"}.
 RequestReadId() {
     prev := {}
     for _, n in StrSplit("1,2,3,4,5,6,7,8,9,0,Numpad1,Numpad2,Numpad3,Numpad4,Numpad5,Numpad6,Numpad7,Numpad8,Numpad9,Numpad0,Backspace,Enter,NumpadEnter,Escape", ",") {
@@ -3337,6 +3367,8 @@ RequestReadId() {
     Loop {
         if (A_TickCount > end)
             return {id: digits, status: "timeout"}
+        if (!WinActive("ahk_exe gta_sa.exe"))
+            return {id: digits, status: "away"}
         modifier := (GetKeyState("Shift", "P") || GetKeyState("Ctrl", "P") || GetKeyState("Alt", "P"))
         for name, was in prev {
             k := "" . name
@@ -3386,6 +3418,8 @@ RequestTypeChangedDigits(digits) {
     {
         digit := A_LoopField
         if (!RegExMatch(digit, "^[0-9]$"))
+            return false
+        if (!WinActive("ahk_exe gta_sa.exe"))
             return false
         SendInput, %digit%
         Random, pauseMs, %dMin%, %dMax%
@@ -3495,7 +3529,7 @@ AnswerMatch(key, prep) {
 
 answerLogger() {
     global settingsFile, answerMap, answerRulesLoaded, answerRulesFile, answerRulesMTime, reportLog
-    global answerComplaint, answerCommand, ansLogID, ansAuthor, playerId
+    global answerComplaint, answerCommand
     global adminName, targetID, targetPunish
     global answerSeen, answerSeenOrder
     static badWords := ""
@@ -3513,9 +3547,10 @@ answerLogger() {
     for _, line in ChatlogReadNew("reports") {
         if RegExMatch(line, "\[(RADMIR|HASSLE)\] (\w+_\w+)?\[(\d+)\]: (.+)", match) {
             Reports := match4
-            ansLogID := match3
-            ansAuthor := match2
-            playerId := ansLogID
+            ; Автор и ID репорта — только локально: общие playerId/ansLogID перезаписывались каждым новым репортом,
+            ; и Reply + Enter отвечал не на тот репорт, который показан в подсказке. Адресат хранится в самой подсказке (ntfHint).
+            repId := match3
+            repAuthor := match2
             Reports := RegExReplace(Reports, "\{[A-F0-9]{6}\}")
             ; Обработанные строки хранятся в памяти (раньше — в ini, где список только разрастался).
             hash := HashLine(line)
@@ -3547,20 +3582,20 @@ answerLogger() {
                 }
             }
             if (bestScore > 0 && IsGTAOpen())
-                ShowTip(ansAuthor, ansLogID, Reports, kR, "Вопрос", bestReply, bestKey)
+                ShowTip(repAuthor, repId, Reports, kR, "Вопрос", bestReply, bestKey)
 
             isHandled := false
             for _, expr in badExpressions {
                 if (AnswerMatch(expr, prep) > 0 && IsGTAOpen()) {
                     isHandled := true
-                    ShowTip(ansAuthor, ansLogID, Reports, kR, "ОСК", "360 Оскорбление администрации.")
+                    ShowTip(repAuthor, repId, Reports, kR, "ОСК", "360 Оскорбление администрации.")
                     break
                 }
             }
             if (!isHandled) {
                 for _, word in badWords {
                     if (InStr(prep.flat, word) && IsGTAOpen()) {
-                        ShowTip(ansAuthor, ansLogID, Reports, kR, "МАТ", "120 Мат в /report.")
+                        ShowTip(repAuthor, repId, Reports, kR, "МАТ", "120 Мат в /report.")
                         break
                     }
                 }
@@ -3570,12 +3605,16 @@ answerLogger() {
 }
 
 respondComplaint() {
-    global hotkeys, answerComplaint, playerId
+    global hotkeys
     if (hotkeys["Reply"] = "")
         return
+    if (!IsObject(ntfHint) || ntfHint.kind != "Вопрос") {
+        SetTimer, respondComplaint, Off
+        return
+    }
     if (GetKeyState(hotkeys["Reply"], "P") && GetKeyState("Enter", "P")) {
-        target := playerId
-        text := answerComplaint
+        target := ntfHint.target
+        text := ntfHint.replyText
         HintClose(false)
         Sleep, 100
         SendMessage, 0x50,, 0x4190419,, A
@@ -3586,13 +3625,17 @@ respondComplaint() {
 }
 
 respondCommand() {
-    global hotkeys, answerCommand, ansLogID, isHumanInput
+    global hotkeys, isHumanInput
     global CMDDelay, InputDelay1, InputDelay2
     if (hotkeys["Reply"] = "")
         return
+    if (!IsObject(ntfHint) || (ntfHint.kind != "МАТ" && ntfHint.kind != "ОСК")) {
+        SetTimer, respondCommand, Off
+        return
+    }
     if (GetKeyState(hotkeys["Reply"], "P") && GetKeyState("Enter", "P")) {
-        target := ansLogID
-        cmdText := answerCommand
+        target := ntfHint.target
+        cmdText := ntfHint.replyText
         HintClose(false)
         Sleep, 100
         SendMessage, 0x50,, 0x4190419,, A
