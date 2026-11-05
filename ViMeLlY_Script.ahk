@@ -8,7 +8,7 @@ SetBatchLines, -1
 SendMode Input
 SetWorkingDir %A_ScriptDir%
 
-global version := "v 1.7.2"
+global version := "v 1.7.3"
 global LicenseURL := "aHR0cHM6Ly9naXN0LmdpdGh1YnVzZXJjb250ZW50LmNvbS9NYWtzaW00ZWtrL2Jl`nMmQ0MjE5MzE1NjFkZDAxYjQzM2Y5M2NhNTMyOWQwL3Jhdy9WaU1lTGxZLWtleXMu`ndHh0"
 
 global repID, ansID, ansLogID
@@ -66,6 +66,7 @@ global requestCanRecall := false
 global truckerSettings := false
 global scriptSettings := false
 global isToolTipActive
+global ntfCorner := 3
 global today := A_DD . "." . A_MM . "." . A_YYYY
 global menuNavItems := []
 global menuNavIndex := 0
@@ -85,6 +86,8 @@ IniRead, pH, %settingsFile%, Preset, punishHelperStatus
 IniRead, aF, %settingsFile%, Preset, additionalFeaturesStatus
 IniRead, aS, %settingsFile%, Preset, adminStatsStatus
 IniRead, isToolTipActive, %settingsFile%, Preset, isToolTipActive, 1
+IniRead, ntfCorner, %settingsFile%, Preset, ntfCorner, 3
+ntfCorner := (ntfCorner >= 1 && ntfCorner <= 5) ? ntfCorner + 0 : 3
 IniRead, isHumanInput, %settingsFile%, Preset, isHumanInput, 0
 isHumanInput := (isHumanInput = 1) ? 1 : 0
 IniRead, autoSpMode, %settingsFile%, Preset, autoSpMode, 1
@@ -410,7 +413,8 @@ clearToolTip() {
 }
 
 ; ============================== Плашки-уведомления на GUI ==============================
-; Все сообщения скрипта (бывшие ToolTip) показываются плашками у левого края окна игры, по центру по вертикали. Плашки не забирают фокус
+; Все сообщения скрипта (бывшие ToolTip) показываются плашками в выбранном месте окна игры (по умолчанию — слева по центру;
+; меняется в настройках скрипта, параметр ntfCorner). Плашки не забирают фокус
 ; и пропускают клики мыши. Сообщение с тем же тегом [ТЕГ] заменяет прежнее. Подсказка-ответ (репорт/оффлайн) — отдельная
 ; плашка сверху с обратным отсчётом; следующая подсказка из очереди показывается, когда текущая закрыта или истекла.
 
@@ -461,8 +465,24 @@ NtfBuild(num, w, title, body, action, foot, accent, bar) {
 }
 
 
-; === NtfLayout: расставляет плашки столбцом у левого края, столбец по центру по вертикали (подсказка-ответ всегда сверху) ===
+; === NtfPosName / NtfPosText: название положения плашек (1 слева сверху, 2 справа сверху, 3 слева по центру, 4 слева снизу, 5 справа снизу) ===
+NtfPosName(corner) {
+    names := ["Слева сверху", "Справа сверху", "Слева по центру", "Слева снизу", "Справа снизу"]
+    return names[corner]
+}
+
+; Текст кнопки в настройках: у выбранного положения галочка.
+NtfPosText(corner) {
+    global ntfCorner
+    arrows := ["↖", "↗", "←", "↙", "↘"]
+    return (corner = ntfCorner ? "✔ " : "") . arrows[corner] . " " . NtfPosName(corner)
+}
+
+
+; === NtfLayout: расставляет плашки столбцом в выбранном месте окна игры (подсказка-ответ всегда сверху столбца) ===
+; Сверху — столбец растёт вниз от верхнего края; снизу — прижат к нижнему краю и растёт вверх; по центру — центруется по вертикали.
 NtfLayout() {
+    global ntfCorner
     NtfAnchor(ax, ay, aw, ah)
     items := []
     if (IsObject(ntfHint))
@@ -479,13 +499,19 @@ NtfLayout() {
     }
     if (shownCount > 1)
         totalH += (shownCount - 1) * 8
-    y := ay + (ah - totalH) // 2
+    if (ntfCorner = 1 || ntfCorner = 2)
+        y := ay + 16
+    else if (ntfCorner = 4 || ntfCorner = 5)
+        y := ay + ah - 16 - totalH
+    else
+        y := ay + (ah - totalH) // 2
     if (y < ay + 8)
         y := ay + 8
+    toRight := (ntfCorner = 2 || ntfCorner = 5)
     for _, it in items {
         if (it.nogui)
             continue
-        x := ax + 16
+        x := toRight ? ax + aw - it.w - 16 : ax + 16
         w := it.w
         h := it.h
         hw := it.hwnd
@@ -2214,7 +2240,15 @@ ScriptSettings:
     Gui, ViMeLlYSettings:Font, s8, Segoe UI
     Gui, ViMeLlYSettings:Add, Button, x17 y+2 w381 gToggleToolTips vToolTipsButton, %tipBtnText%
     Gui, ViMeLlYSettings:Font, s7, Segoe UI
-    Gui, ViMeLlYSettings:Add, Text, x17 y+2 w381 Center, Сообщения скрипта над чатом: статус, ответы, ошибки.
+    Gui, ViMeLlYSettings:Add, Text, x17 y+2 w381 Center, Сообщения скрипта плашками на экране: статус, ответы, ошибки.
+    Gui, ViMeLlYSettings:Font, s8, Segoe UI
+    Gui, ViMeLlYSettings:Add, Button, x17 y+4 w190 gNtfPosSelect vNtfPos1, % NtfPosText(1)
+    Gui, ViMeLlYSettings:Add, Button, x+1 yp w190 gNtfPosSelect vNtfPos2, % NtfPosText(2)
+    Gui, ViMeLlYSettings:Add, Button, x17 y+1 w381 gNtfPosSelect vNtfPos3, % NtfPosText(3)
+    Gui, ViMeLlYSettings:Add, Button, x17 y+1 w190 gNtfPosSelect vNtfPos4, % NtfPosText(4)
+    Gui, ViMeLlYSettings:Add, Button, x+1 yp w190 gNtfPosSelect vNtfPos5, % NtfPosText(5)
+    Gui, ViMeLlYSettings:Font, s7, Segoe UI
+    Gui, ViMeLlYSettings:Add, Text, x17 y+2 w381 Center, Положение плашек: выберите угол или середину слева, на экране появится пробная плашка.
 
     if (scriptMode == "Admin") {
         MenuSection("ViMeLlYSettings", "Дополнения")
@@ -2253,6 +2287,19 @@ ToggleToolTips:
     IniWrite, %isToolTipActive%, %settingsFile%, Preset, isToolTipActive
     newTipText := isToolTipActive ? "💬 Всплывающие подсказки: ✔ Включены" : "💬 Всплывающие подсказки: ✘ Выключены"
     GuiControl, ViMeLlYSettings:, ToolTipsButton, %newTipText%
+Return
+
+; === NtfPosSelect: выбор положения плашек (кнопки NtfPos1…NtfPos5 в настройках) ===
+NtfPosSelect:
+    newCorner := SubStr(A_GuiControl, 0) + 0
+    if (newCorner < 1 || newCorner > 5)
+        Return
+    ntfCorner := newCorner
+    IniWrite, %ntfCorner%, %settingsFile%, Preset, ntfCorner
+    Loop, 5
+        GuiControl, ViMeLlYSettings:, NtfPos%A_Index%, % NtfPosText(A_Index)
+    ; Показанные сейчас плашки переезжают сами (NtfLayout), пробная плашка показывает новое место.
+    NtfShow("NtfPosPreview", "Плашки", "Теперь плашки здесь: " . NtfPosName(ntfCorner) . ".", "4C8DFF", 3500)
 Return
 
 SearchStatsByDateAdmin:
@@ -3214,7 +3261,7 @@ Request:
     requestCanRecall := true
     ; Если такого обращения не существует, счётчик не двигаем: следующее нажатие отправит тот же ID.
     if (RequestRejected())
-        ToolTip("[REQUEST] Обращение " . nextRequest . " не существует.", 2500)
+        ToolTip("[REQUEST] Обращение " . nextRequest . " не существует. Счётчик не изменён.", 2500)
     else
         lastRequest := nextRequest + 1
     ChatIsOpen := false
@@ -3530,7 +3577,7 @@ respondCommand() {
     }
 }
 
-; === DefaultAnswerRulesText: встроенные 93 правила ответа для первого запуска ===
+; === DefaultAnswerRulesText: встроенные правила ответа для первого запуска (93 ключа в 76 записях) ===
 DefaultAnswerRulesText() {
     rules := ""
     rules .= "# ViMeLlY Script: ключ = ответ`r`n"
@@ -3538,6 +3585,7 @@ DefaultAnswerRulesText() {
     rules .= "# Не используйте знак = в ключе.`r`n"
     rules .= "# Слово ключа — начало слова в репорте (акс найдёт «аксессуары», но не «Максим»). *слово — искать внутри слова.`r`n"
     rules .= "# Ключ из нескольких слов: все слова должны встретиться. Побеждает самое точное правило. Файл можно править на лету.`r`n"
+    rules .= "# Один ответ на несколько ключей: ключ1 | ключ2 | ключ3 = ответ. Общая часть: акс {дом|биз} = ответ (это акс дом и акс биз).`r`n"
     rules .= "свалк = Свалка: 7:00, 11:00, 14:00, 19:00, 23:00.`r`n"
     rules .= "конт = Контейнеры: 8:00, 12:00, 16:00, 20:00, 00:00.`r`n"
     rules .= "адвокат = Список адвокатов -> /adlist. Гражданское лицо: 15.000, гос.организации: 20.000, ОПГ/Банды: 30.000 р. (КПЗ), ФСИН: 30.000.`r`n"
@@ -3549,43 +3597,33 @@ DefaultAnswerRulesText() {
     rules .= "гараж = Гаражные места по классам: Низкий - 1; Средний - 5; Высокий - до 17 мест.`r`n"
     rules .= "киоск = Вернуть предметы: /return_items.`r`n"
     rules .= "работ увол = Уволиться: /myjobs, /leave.`r`n"
-    rules .= "увол = Уволить игрока в онлайне - /unvinvite. | В оффлайне - /uninviteoff.`r`n"
-    rules .= "увал = Уволить игрока в онлайне - /unvinvite. | В оффлайне - /uninviteoff.`r`n"
+    rules .= "увол | увал = Уволить игрока в онлайне - /unvinvite. | В оффлайне - /uninviteoff.`r`n"
     rules .= "выйти семь = Покинуть семью: /family_leave.`r`n"
     rules .= "выйти банд = Покинуть банду: /family_leave.`r`n"
     rules .= "снять наручн = Снять наручники: /uncuff.`r`n"
     rules .= "розыск = Выдать игроку розыск: /su.`r`n"
     rules .= "наручн = Надеть наручники: /cuff.`r`n"
-    rules .= "чин = Не чиним автомобили. Вызывайте механиков(/c 090), либо используйте рем.комплект.`r`n"
-    rules .= "чен = Не чиним автомобили. Вызывайте механиков(/c 090), либо используйте рем.комплект.`r`n"
-    rules .= "почин = Не чиним автомобили. Вызывайте механиков(/c 090), либо используйте рем.комплект.`r`n"
-    rules .= "почен = Не чиним автомобили. Вызывайте механиков(/c 090), либо используйте рем.комплект.`r`n"
+    rules .= "чин | чен | почин | почен = Не чиним автомобили. Вызывайте механиков(/c 090), либо используйте рем.комплект.`r`n"
     rules .= "пневм = Управлять пневмоподвеской: /spanel.`r`n"
     rules .= "гидр = Включить/Выключить гидравлику: Кнопка H.`r`n"
     rules .= "ключ = Передать ключи от машины: /allow.`r`n"
     rules .= "аук = Аукцион идет 24ч с момента появления слота.`r`n"
     rules .= "слет = Слет каждый час, с 8:00 до 23:00. Кроме отелей.`r`n"
-    rules .= "букс = Починить авто: /repair | Предложить буксировку на СТО: /tow | Подцепить машину: /at.`r`n"
-    rules .= "подцеп = Починить авто: /repair | Предложить буксировку на СТО: /tow | Подцепить машину: /at.`r`n"
+    rules .= "букс | подцеп = Починить авто: /repair | Предложить буксировку на СТО: /tow | Подцепить машину: /at.`r`n"
     rules .= "посмотреть мед = Посмотреть свою мед.карту: /showmc.`r`n"
-    rules .= "продать кв = Продать квартиру/дом игроку: /sellmyhome | Государству: /sellhome.`r`n"
-    rules .= "продать дом = Продать квартиру/дом игроку: /sellmyhome | Государству: /sellhome.`r`n"
+    rules .= "продать {кв|дом} = Продать квартиру/дом игроку: /sellmyhome | Государству: /sellhome.`r`n"
     rules .= "продать огород = Продать огород игроку: /sellmygarden | Государству: /sellgarden.`r`n"
     rules .= "продать киоск = Продать киоск игроку: /sellmystall | Государству: /sellstall.`r`n"
     rules .= "стил бо = Изменить стиль боя: /set_style`r`n"
     rules .= "отм заказ = Отменить заказ механика: /to | Такси: /phone - Приложение такси.`r`n"
     rules .= "отм вызов = Отменить вызов: /to.`r`n"
-    rules .= "приглас = Пригласить игрока в семью/банду/фракцию: /invite.`r`n"
-    rules .= "приглос = Пригласить игрока в семью/банду/фракцию: /invite.`r`n"
-    rules .= "инвайт = Пригласить игрока в семью/банду/фракцию: /invite.`r`n"
-    rules .= "принять = Пригласить игрока в семью/банду/фракцию: /invite.`r`n"
+    rules .= "приглас | приглос | инвайт | принять = Пригласить игрока в семью/банду/фракцию: /invite.`r`n"
     rules .= "выкин авто = Выкинуть игрока из своего авто: /eject | Выкинуть из авто(МВД, ФСБ): /ejectout.`r`n"
     rules .= "спавн = Изменить место появления при заходе в игру: /setspawn.`r`n"
     rules .= "спавн банд = Изменить место появления для банды: /gang_spawn.`r`n"
     rules .= "авто банд = Добавить авто в банду: /gang_car.`r`n"
     rules .= "уволить = Уволить игрока из фракции/банды/семьи: /uninvite.`r`n"
-    rules .= "ранг банд = Изменить игроку ранг в банде/семье: /frank.`r`n"
-    rules .= "ранг семь = Изменить игроку ранг в банде/семье: /frank.`r`n"
+    rules .= "ранг {банд|семь} = Изменить игроку ранг в банде/семье: /frank.`r`n"
     rules .= "ранг = Изменить ранг игроку во фракции: /rang.`r`n"
     rules .= "выда мед = Выдать мед.карту игроку: /medcard.`r`n"
     rules .= "раци = Рация организации/ТК: /r - RP(IC) | /rr - NRP(OOC).`r`n"
@@ -3594,31 +3632,24 @@ DefaultAnswerRulesText() {
     rules .= "обмен нотар = Провести обмен в нотариальном агенстве: /exchange.`r`n"
     rules .= "багаж = Открыть багажник на личном авто: /trunk.`r`n"
     rules .= "паспорт = Показать свой паспорт: /pass.`r`n"
-    rules .= "вб = Посмотреть военный билет: /pass.`r`n"
-    rules .= "воен билет = Посмотреть военный билет: /pass.`r`n"
+    rules .= "вб | воен билет = Посмотреть военный билет: /pass.`r`n"
     rules .= "тест = Предложить тест-драйв игроку: /cm_test_drive.`r`n"
     rules .= "шины = Поменять шины на авто: /replace_tire.`r`n"
     rules .= "сигнал = Установить сигнализацию на авто: /set_alarm.`r`n"
     rules .= "мп = Ожидайте. О проведении Мероприятия уведомят в чате.`r`n"
-    rules .= "рвс = Ожидайте. О проведении Респавна авто уведомят в чате.`r`n"
-    rules .= "рвц = Ожидайте. О проведении Респавна авто уведомят в чате.`r`n"
-    rules .= "респ = Ожидайте. О проведении Респавна авто уведомят в чате.`r`n"
-    rules .= "rwc = Ожидайте. О проведении Респавна авто уведомят в чате.`r`n"
+    rules .= "рвс | рвц | респ | rwc = Ожидайте. О проведении Респавна авто уведомят в чате.`r`n"
     rules .= "шкаф = Переставить шкаф: /makestore | Открыть: /use.`r`n"
     rules .= "продать биз = Продать бизнес игроку: /sellmybiz | Государству: /sellbiz.`r`n"
     rules .= "собес = Посмотреть активные события в игре: /events.`r`n"
     rules .= "удост = Показать свое удостоверение: /doc.`r`n"
     rules .= "сня брон = Снять бронежилет: /armoff.`r`n"
     rules .= "акс = Снять все надетые аксессуары: /reset | Надеть: /put_on.`r`n"
-    rules .= "акс дом = Редактировать аксессуары дома/бизнеса: /pa_edit.`r`n"
-    rules .= "акс биз = Редактировать аксессуары дома/бизнеса: /pa_edit.`r`n"
-    rules .= "пожен = Предложение руки и сердца: /wedding | Развестись: /divorce.`r`n"
-    rules .= "развод = Предложение руки и сердца: /wedding | Развестись: /divorce.`r`n"
+    rules .= "акс {дом|биз} = Редактировать аксессуары дома/бизнеса: /pa_edit.`r`n"
+    rules .= "пожен | развод = Предложение руки и сердца: /wedding | Развестись: /divorce.`r`n"
     rules .= "свадьб = Чтобы сыграть свадьбу, необходимо купить обручальные кольца в магазине аксессуаров.`r`n"
     rules .= "бой = Вызвать на бой другого игрока в спорт.зале: /fight.`r`n"
     rules .= "выкл телеф = Включить/Выключить телефон: /togphone.`r`n"
-    rules .= "ч с фрак = Добавить в черный список организации: /blist.`r`n"
-    rules .= "ч с орг = Добавить в черный список организации: /blist.`r`n"
+    rules .= "ч с {фрак|орг} = Добавить в черный список организации: /blist.`r`n"
     rules .= "ч с телеф = Добавить номер в черный список: /phone_black.`r`n"
     rules .= "наказ = Посмотреть список наказаний: /alist | Если посадили в КПЗ/ФСИН: Радиальное меню(R) - другое - личное дело.`r`n"
     rules .= "перев = Мы не переворачиваем авто. Используйте: /c 090, помощь друга (R - транспорт - перевернуть авто), домкрат.`r`n"
@@ -3678,6 +3709,40 @@ EnsureAnswerRulesFile() {
     return FileExist(answerRulesFile) ? true : false
 }
 
+; === AnswerExpandKey: запись ключа -> список обычных ключей ===
+; «а | б | в» — отдельные ключи с общим ответом. «x {а|б} y» — группа: «x а y» и «x б y». Можно сочетать: «акс {дом|биз} | аксессуары дом».
+; Ключ без | и {} возвращается как есть, поэтому прежние файлы правил работают без изменений. Предел — 256 вариантов на запись.
+AnswerExpandKey(key) {
+    pending := [key]
+    done := []
+    while (pending.Length() > 0) {
+        cur := pending.Pop()
+        openPos := InStr(cur, "{")
+        closePos := openPos ? InStr(cur, "}", false, openPos + 1) : 0
+        if (!openPos || !closePos) {
+            done.Push(cur)
+            continue
+        }
+        head := SubStr(cur, 1, openPos - 1)
+        tail := SubStr(cur, closePos + 1)
+        group := SubStr(cur, openPos + 1, closePos - openPos - 1)
+        Loop, Parse, group, |
+            pending.Push(head . A_LoopField . tail)
+        if (pending.Length() + done.Length() > 256)
+            break
+    }
+    result := []
+    for _, item in done {
+        Loop, Parse, item, |
+        {
+            alt := Trim(RegExReplace(A_LoopField, "\s+", " "))
+            if (alt != "")
+                result.Push(alt)
+        }
+    }
+    return result
+}
+
 LoadAnswerRules() {
     global answerMap, answerRulesFile, answerRulesLoaded, scriptDir
     ; При необходимости создаёт встроенную базу при первом запуске.
@@ -3704,8 +3769,11 @@ LoadAnswerRules() {
             continue
         key := Trim(SubStr(line, 1, separator - 1))
         value := Trim(SubStr(line, separator + 1))
-        if (key != "" && value != "")
-            updated[key] := value
+        if (key = "" || value = "")
+            continue
+        ; Одна запись может задавать несколько ключей («а | б», «акс {дом|биз}») с одним ответом.
+        for _, alt in AnswerExpandKey(key)
+            updated[alt] := value
     }
     ; Совместимость: «чин»/«чен» раньше находили «починить» внутри слова, теперь ключ — начало слова.
     if (updated.HasKey("чин") && !updated.HasKey("почин"))
