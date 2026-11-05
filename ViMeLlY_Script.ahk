@@ -8,7 +8,7 @@ SetBatchLines, -1
 SendMode Input
 SetWorkingDir %A_ScriptDir%
 
-global version := "v 1.7.3"
+global version := "v 1.7.4"
 global LicenseURL := "aHR0cHM6Ly9naXN0LmdpdGh1YnVzZXJjb250ZW50LmNvbS9NYWtzaW00ZWtrL2Jl`nMmQ0MjE5MzE1NjFkZDAxYjQzM2Y5M2NhNTMyOWQwL3Jhdy9WaU1lTGxZLWtleXMu`ndHh0"
 
 global repID, ansID, ansLogID
@@ -94,6 +94,8 @@ IniRead, autoSpMode, %settingsFile%, Preset, autoSpMode, 1
 autoSpMode := (autoSpMode = 2 || autoSpMode = 3) ? autoSpMode + 0 : 1
 IniRead, autoSpPool, %settingsFile%, Preset, autoSpPool, 5
 autoSpPool := (autoSpPool >= 1 && autoSpPool <= 10) ? autoSpPool + 0 : 5
+IniRead, autoSpMaxAge, %settingsFile%, Preset, autoSpMaxAge, 180
+autoSpMaxAge := (autoSpMaxAge = 30 || autoSpMaxAge = 60 || autoSpMaxAge = 120 || autoSpMaxAge = 180 || autoSpMaxAge = 300) ? autoSpMaxAge + 0 : 180
 
 ToolTip("[𝐒𝐂𝐑𝐈𝐏𝐓] Инициализация скрипта...", 300)
 
@@ -1813,6 +1815,14 @@ Menu:
         Gui, ViMeLlY:Font, s8, Segoe UI
         Gui, ViMeLlY:Add, Button, x17 y+2 w271 gAutoSpMode_Cycle vAutoSpModeButton, ⇄ Выбор жалобы: %autoSpModeName%
         Gui, ViMeLlY:Add, Button, x+1 yp w109 gAutoSpPool_Cycle vAutoSpPoolButton, 🧠 Помнит: %autoSpPool%
+        Gui, ViMeLlY:Font, s7, Segoe UI
+        Gui, ViMeLlY:Add, Text, x17 y+3 w381 Center, Сколько скрипт помнит репорт (режимы «случайная» и «самая старая»):
+        Gui, ViMeLlY:Font, s8, Segoe UI
+        Gui, ViMeLlY:Add, Button, x17 y+1 w75 gAutoSpAgeSelect vAutoSpAge1, % AutoSpAgeBtnText(1)
+        Gui, ViMeLlY:Add, Button, x+1 yp w75 gAutoSpAgeSelect vAutoSpAge2, % AutoSpAgeBtnText(2)
+        Gui, ViMeLlY:Add, Button, x+1 yp w75 gAutoSpAgeSelect vAutoSpAge3, % AutoSpAgeBtnText(3)
+        Gui, ViMeLlY:Add, Button, x+1 yp w75 gAutoSpAgeSelect vAutoSpAge4, % AutoSpAgeBtnText(4)
+        Gui, ViMeLlY:Add, Button, x+1 yp w77 gAutoSpAgeSelect vAutoSpAge5, % AutoSpAgeBtnText(5)
         Gui, ViMeLlY:Add, Button, x17 y+1 w190 gReportLog_ToggleStatus vStatusLogButton, %ansLogStatus%
         Gui, ViMeLlY:Add, Button, x+1 yp w190 gPunishHelper_ToggleStatus vPunishHelperButton, %punishHelperSwitch%
         Gui, ViMeLlY:Font, s7, Segoe UI
@@ -2444,6 +2454,19 @@ AutoSpPool_Cycle:
     GuiControl,, AutoSpHint, % AutoSpHintText()
 Return
 
+; === AutoSpAgeSelect: выбор времени, которое скрипт помнит репорт (кнопки AutoSpAge1…AutoSpAge5 на главной) ===
+AutoSpAgeSelect:
+    ageIndex := SubStr(A_GuiControl, 0) + 0
+    ageList := AutoSpAgeList()
+    if (ageIndex < 1 || ageIndex > ageList.Length())
+        Return
+    autoSpMaxAge := ageList[ageIndex]
+    IniWrite, %autoSpMaxAge%, %settingsFile%, Preset, autoSpMaxAge
+    Loop, 5
+        GuiControl, ViMeLlY:, AutoSpAge%A_Index%, % AutoSpAgeBtnText(A_Index)
+    GuiControl, ViMeLlY:, AutoSpHint, % AutoSpHintText()
+Return
+
 InteractMenu:
     IniRead, kI, %settingsFile%, Keys, Interact, %A_Space%
     kI := (kI == "") ? "Нет" : ReadableHotkey(kI)
@@ -2935,7 +2958,24 @@ AutoSpParse(line) {
 
 ; === AutoSpHintText: пояснение под кнопкой выбора жалобы ===
 AutoSpHintText() {
-    return "Случайная и самая старая — из " . autoSpPool . " последних жалоб, не старше " . Round(autoSpMaxAge / 60) . " мин"
+    return "Случайная и самая старая — из " . autoSpPool . " последних жалоб, не старше " . AutoSpAgeText(autoSpMaxAge)
+}
+
+
+; === AutoSpAgeList / AutoSpAgeText / AutoSpAgeBtnText: варианты времени, которое скрипт помнит репорт (в секундах) ===
+AutoSpAgeList() {
+    return [30, 60, 120, 180, 300]
+}
+
+AutoSpAgeText(seconds) {
+    return (seconds < 60) ? seconds . " сек" : (seconds // 60) . " мин"
+}
+
+; Текст кнопки в меню: у выбранного значения галочка.
+AutoSpAgeBtnText(index) {
+    global autoSpMaxAge
+    ages := AutoSpAgeList()
+    return (ages[index] = autoSpMaxAge ? "✔ " : "") . AutoSpAgeText(ages[index])
 }
 
 
@@ -3017,7 +3057,7 @@ AutoSpPickReport() {
                 cand.Push(entry)
         }
         if (cand.Length() = 0) {
-            ToolTip("[𝐒𝐂𝐑𝐈𝐏𝐓] ℹ️ Новых репортов нет (свежие, без ответа и не взятые, за " . Round(autoSpMaxAge / 60) . " мин).", 1500)
+            ToolTip("[𝐒𝐂𝐑𝐈𝐏𝐓] ℹ️ Новых репортов нет (свежие, без ответа и не взятые, за " . AutoSpAgeText(autoSpMaxAge) . ").", 1500)
             return ""
         }
         if (autoSpMode = 3) {
