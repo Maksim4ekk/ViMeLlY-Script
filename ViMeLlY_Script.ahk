@@ -8,10 +8,23 @@ SetBatchLines, -1
 SendMode Input
 SetWorkingDir %A_ScriptDir%
 
-global version := "v 1.7.5"
+global version := "v 1.7.6"
 global LicenseURL := "aHR0cHM6Ly9naXN0LmdpdGh1YnVzZXJjb250ZW50LmNvbS9NYWtzaW00ZWtrL2Jl`nMmQ0MjE5MzE1NjFkZDAxYjQzM2Y5M2NhNTMyOWQwL3Jhdy9WaU1lTGxZLWtleXMu`ndHh0"
 
 global repID, ansID, ansLogID
+global spReplyTarget := ""
+global menuHoverHwnd := 0
+global spActiveSeq := 0, spActiveUntil := 0, spStage := 0, spTargetTitle := "", spSpecID := ""
+global reportPanelHidden := false
+global helpMenu := "", helpKey := "", helpReturn := "", helpDirect := false
+global helpBtnMap := {}
+global serverUTCOffset := 3
+global reportPanelEnabled := 1
+global reportPanelNum := 41
+global reportPanelSig := ""
+global reportPanelRows := []
+global reportPanelAgeHwnds := []
+global autoSpSeq := 0
 global interactID := ""
 global hotkeys := {}
 global previousHotkeys := {}
@@ -29,6 +42,7 @@ global additionalFeaturesFile := scriptDir . "ViMeLlY-Features.ahk"
 global statisticFile := scriptDir . "statistic.ini"
 global scriptVersion := A_Temp . "\ViMeLlYScript.ver"
 global answerRulesFile := scriptDir . "answer-rules.txt"
+global punishWordsFile := scriptDir . "punish-words.txt"
 global autoIssueFile := scriptDir . "auto-issue.txt"
 global issueRunning := false
 global issueAbort := false
@@ -53,6 +67,9 @@ global intSaved := {}
 global intOpen := false
 global answerMap := {}
 global answerRulesLoaded := false
+global punishWordsList := []
+global punishWordsLoaded := false
+global punishWordsMTime := ""
 global automationQueue := []
 global automationBusy := false
 global automationLastSent := 0
@@ -67,13 +84,17 @@ global truckerSettings := false
 global scriptSettings := false
 global isToolTipActive
 global ntfCorner := 3
-global today := A_DD . "." . A_MM . "." . A_YYYY
+global punishConfirmEnabled := 1
+global punishConfirmState := ""
+global punishConfirmArmed := false
+global today := StatsToday()
 global menuNavItems := []
 global menuNavIndex := 0
 global menuNavGuiName := ""
 global menuNavGuiHwnd := 0
 global CurrentHWID, EnteredKey, onOrder
 OnMessage(0x21, "MenuMouseActivate")
+OnMessage(0x200, "MenuMouseMove")
 
 SetTimer, InitializeViMeLlY, -50
 
@@ -86,16 +107,21 @@ IniRead, pH, %settingsFile%, Preset, punishHelperStatus
 IniRead, aF, %settingsFile%, Preset, additionalFeaturesStatus
 IniRead, aS, %settingsFile%, Preset, adminStatsStatus
 IniRead, isToolTipActive, %settingsFile%, Preset, isToolTipActive, 1
+IniRead, punishConfirmEnabled, %settingsFile%, Preset, punishConfirm, 1
+punishConfirmEnabled := (punishConfirmEnabled = 0) ? 0 : 1
 IniRead, ntfCorner, %settingsFile%, Preset, ntfCorner, 3
 ntfCorner := (ntfCorner >= 1 && ntfCorner <= 5) ? ntfCorner + 0 : 3
-IniRead, isHumanInput, %settingsFile%, Preset, isHumanInput, 0
-isHumanInput := (isHumanInput = 1) ? 1 : 0
+isHumanInput := (IniReadRetry("Preset", "isHumanInput", 0) = 1) ? 1 : 0
 IniRead, autoSpMode, %settingsFile%, Preset, autoSpMode, 1
 autoSpMode := (autoSpMode = 2 || autoSpMode = 3) ? autoSpMode + 0 : 1
 IniRead, autoSpPool, %settingsFile%, Preset, autoSpPool, 5
 autoSpPool := (autoSpPool >= 1 && autoSpPool <= 10) ? autoSpPool + 0 : 5
 IniRead, autoSpMaxAge, %settingsFile%, Preset, autoSpMaxAge, 180
 autoSpMaxAge := (autoSpMaxAge = 30 || autoSpMaxAge = 60 || autoSpMaxAge = 120 || autoSpMaxAge = 180 || autoSpMaxAge = 300) ? autoSpMaxAge + 0 : 180
+IniRead, reportPanelEnabled, %settingsFile%, Preset, reportPanel, 1
+reportPanelEnabled := (reportPanelEnabled = 0) ? 0 : 1
+IniRead, serverUTCOffset, %settingsFile%, Preset, serverUTCOffset, 3
+serverUTCOffset := (RegExMatch(serverUTCOffset, "^-?\d+$") && serverUTCOffset >= -12 && serverUTCOffset <= 14) ? serverUTCOffset + 0 : 3
 
 ToolTip("[𝐒𝐂𝐑𝐈𝐏𝐓] Инициализация скрипта...", 300)
 
@@ -123,8 +149,7 @@ InitializeViMeLlY() {
     scriptSettingsChecker()
     IniRead, savedScriptMode, %settingsFile%, Preset, scriptMode, %scriptType%
     scriptMode := (savedScriptMode = "Admin" || savedScriptMode = "Player") ? savedScriptMode : scriptType
-    IniRead, inputMode, %settingsFile%, Preset, isHumanInput, 0
-    isHumanInput := (inputMode = 1) ? 1 : 0
+    isHumanInput := (IniReadRetry("Preset", "isHumanInput", isHumanInput) = 1) ? 1 : 0
 
     LoadAnswerRules()
     ChatlogWatchFromNow("reports")
@@ -132,7 +157,9 @@ InitializeViMeLlY() {
     LoadHotkeys()
     BindHotkeys()
     SetTimer, ChatStateWatch, 300
+    SetTimer, InputSettingsGuard, 5000
     if (scriptMode = "Admin") {
+        ReportPanelApply()
         if (reportLog)
             SetTimer, answerLogger, 500
         adminsStatistics()
@@ -440,7 +467,7 @@ NtfAnchor(ByRef ax, ByRef ay, ByRef aw, ByRef ah) {
 ; === NtfBuild: строит окно плашки (скрытым) и возвращает {hwnd, w, h} ===
 NtfBuild(num, w, title, body, action, foot, accent, bar) {
     ; Переменные контролов внутри функции обязаны быть глобальными (иначе ошибка «control's variable must be global or static»).
-    global NtfEnd31, NtfEnd32, NtfEnd33, NtfEnd34, NtfEnd35, NtfEnd36, NtfEnd37, NtfEnd38, NtfEnd39, NtfBar39
+    global NtfEnd31, NtfEnd32, NtfEnd33, NtfEnd34, NtfEnd35, NtfEnd36, NtfEnd37, NtfEnd38, NtfEnd39, NtfBar39, NtfEnd40, NtfBar40
     Gui, %num%:Destroy
     Gui, %num%:New, +AlwaysOnTop -Caption +ToolWindow +E0x08000020 +HwndhNtf
     Gui, %num%:Margin, 0, 0
@@ -677,7 +704,8 @@ HintShow(item) {
         action := "➜  " . item.reply
         foot := key . " + Enter — ответить, что игрок вышел"
     } else {
-        action := "➜  /rmute " . item.id . " " . item.reply
+        punishParts := PunishSplitCommand(item.reply)
+        action := "➜  " . punishParts.cmd . " " . item.id . (punishParts.args != "" ? " " . punishParts.args : "")
         foot := key . " + Enter — выдать наказание"
     }
     dur := 7777
@@ -1022,9 +1050,12 @@ AutomationQueueChat(command, allowAny := false) {
 ; Признак ставится по T/F6 и снимается только по Enter/Esc в игре. Если уйти в другое приложение с открытым чатом,
 ; он оставался включённым и блокировал автозапрос, автоответ и автоотправку команд, пока не нажать Enter/Esc.
 ChatStateWatch() {
-    global ChatIsOpen, requestBusy
-    if (ChatIsOpen && !requestBusy && !WinActive("ahk_exe gta_sa.exe"))
+    global ChatIsOpen, requestBusy, requestCanRecall
+    if (ChatIsOpen && !requestBusy && !WinActive("ahk_exe gta_sa.exe")) {
         ChatIsOpen := false
+        ; Что осталось в чате игры, неизвестно: ↑ для повтора /z больше не используем, пока /z не отправлен заново.
+        requestCanRecall := false
+    }
 }
 
 
@@ -1109,6 +1140,7 @@ scriptSettingsChecker() {
             IniWrite, %A_Space%, %settingsFile%, Keys, autoIssue
             IniWrite, F10, %settingsFile%, Keys, AdminStats
             IniWrite, %A_Space%, %settingsFile%, Keys, CopyAChat
+            IniWrite, Insert, %settingsFile%, Keys, PanelHide
             
             IniWrite, Быстро, %settingsFile%, Preset, currentSetup
             IniWrite, 0, %settingsFile%, Preset, reportLog
@@ -1189,6 +1221,99 @@ guiColorFunc() {
     return randomLogo
 }
 
+; === IniReadRetry: чтение настройки с повтором (файл мог быть занят записью статистики в этот момент) ===
+IniReadRetry(section, key, default := "") {
+    global settingsFile
+    Loop, 3 {
+        IniRead, v, %settingsFile%, %section%, %key%, __MISSING__
+        if (v != "__MISSING__")
+            return v
+        if (!FileExist(settingsFile))
+            break
+        Sleep, 30
+    }
+    return default
+}
+
+
+; === ApplyInputDelays: пресет и паузы ввода из settings.ini с проверкой значений ===
+; Известный пресет берётся из таблицы (значения в ini не могут его испортить). «Настраиваемый» — числа из ini в допустимых пределах.
+; Если в ini пусто, «ERROR» или мусор — используется «Быстро», а ini исправляется.
+ApplyInputDelays(heal := true) {
+    global settingsFile
+    presets := {"Медленно": [260, 90, 140], "Среднее": [250, 80, 90], "Быстро": [230, 60, 80], "Оч.быстро": [160, 40, 60]}
+    name := Trim(IniReadRetry("Preset", "currentSetup", ""))
+    vals := ""
+    if (presets.HasKey(name)) {
+        vals := presets[name]
+    } else if (name = "Настраиваемый") {
+        c := Trim(IniReadRetry("Preset", "Delay1", ""))
+        a := Trim(IniReadRetry("Preset", "Delay2", ""))
+        b := Trim(IniReadRetry("Preset", "Delay3", ""))
+        if (RegExMatch(c, "^\d{1,4}$") && RegExMatch(a, "^\d{1,4}$") && RegExMatch(b, "^\d{1,4}$")) {
+            c := c + 0
+            a := a + 0
+            b := b + 0
+            if (c < 50)
+                c := 50
+            if (a < 5)
+                a := 5
+            if (b < a)
+                b := a
+            vals := [c, a, b]
+        }
+    }
+    if (!IsObject(vals)) {
+        name := "Быстро"
+        vals := presets[name]
+    }
+    SetPreset(name, vals[1], vals[2], vals[3])
+    if (heal) {
+        IniWrite, %name%, %settingsFile%, Preset, currentSetup
+        v1 := vals[1]
+        v2 := vals[2]
+        v3 := vals[3]
+        IniWrite, %v1%, %settingsFile%, Preset, Delay1
+        IniWrite, %v2%, %settingsFile%, Preset, Delay2
+        IniWrite, %v3%, %settingsFile%, Preset, Delay3
+    }
+}
+
+
+; === InputSettingsGuard: если паузы ввода в памяти стали пустыми/нечисловыми/вне пределов, они восстанавливаются ===
+InputSettingsGuard() {
+    global CMDDelay, InputDelay1, InputDelay2, scriptMode
+    ok := RegExMatch(CMDDelay . "", "^\d+$") && RegExMatch(InputDelay1 . "", "^\d+$") && RegExMatch(InputDelay2 . "", "^\d+$")
+    if (ok)
+        ok := (CMDDelay >= 50 && InputDelay1 >= 5 && InputDelay2 >= InputDelay1)
+    if (!ok)
+        ApplyInputDelays(scriptMode = "Admin")
+}
+
+
+; === CustomDelaysApply: «Настраиваемый» пресет — проверка чисел, запись в ini и применение сразу ===
+CustomDelaysApply(sp, d1, d2) {
+    global settingsFile, CMDDelay, InputDelay1, InputDelay2
+    if (!RegExMatch(sp, "^\d{1,4}$") || !RegExMatch(d1, "^\d{1,4}$") || !RegExMatch(d2, "^\d{1,4}$"))
+        return
+    sp := sp + 0
+    d1 := d1 + 0
+    d2 := d2 + 0
+    if (sp < 50)
+        sp := 50
+    if (d1 < 5)
+        d1 := 5
+    if (d2 < d1)
+        d2 := d1
+    if (sp = CMDDelay && d1 = InputDelay1 && d2 = InputDelay2)
+        return
+    IniWrite, %sp%, %settingsFile%, Preset, Delay1
+    IniWrite, %d1%, %settingsFile%, Preset, Delay2
+    IniWrite, %d2%, %settingsFile%, Preset, Delay3
+    SetPreset("Настраиваемый", sp, d1, d2)
+}
+
+
 SetPreset(name, val1, val2, val3) {
     global currentSetup, CMDDelay, InputDelay1, InputDelay2
     
@@ -1218,6 +1343,7 @@ LoadHotkeys() {
     IniRead, hkAutoEdit, %settingsFile%, Keys, autoEdit
     IniRead, hkAutoBizlist, %settingsFile%, Keys, autoBizlist
     IniRead, hkEmergencyDelete, %settingsFile%, Keys, EmergencyDelete
+    IniRead, hkPanelHide, %settingsFile%, Keys, PanelHide, Insert
     
     hotkeys["Watch"] := hkWatch != "ERROR" ? hkWatch : ""
     hotkeys["Request"] := hkRequest != "ERROR" ? hkRequest : ""
@@ -1231,6 +1357,7 @@ LoadHotkeys() {
     hotkeys["autoEdit"] := (hkAutoEdit == "ERROR") ? "" : (hkAutoEdit == "" ? "" : hkAutoEdit)
     hotkeys["autoBizlist"] := (hkAutoBizlist == "ERROR") ? "" : (hkAutoBizlist == "" ? "" : hkAutoBizlist)
     hotkeys["EmergencyDelete"] := (hkEmergencyDelete == "ERROR") ? "" : (hkEmergencyDelete == "" ? "" : hkEmergencyDelete)
+    hotkeys["PanelHide"] := (hkPanelHide == "ERROR") ? "" : hkPanelHide
 }
 
 BindHotkeys() {
@@ -1263,12 +1390,8 @@ BindHotkeys() {
         }
     }
 
-    IniRead, CS, %settingsFile%, Preset, currentSetup
-    IniRead, d1, %settingsFile%, Preset, Delay1
-    IniRead, d2, %settingsFile%, Preset, Delay2
-    IniRead, d3, %settingsFile%, Preset, Delay3
-    
-    SetPreset(CS, d1, d2, d3)
+    ; Паузы ввода берутся из проверенной таблицы пресетов; «ERROR»/пустые значения больше не попадают в Sleep.
+    ApplyInputDelays(scriptMode = "Admin")
 }
 
 
@@ -1277,8 +1400,36 @@ BindHotkeys() {
 ; ====================================================================================================================
 
 ; === StatsToday: актуальная календарная дата, не кэшируется с момента запуска ===
+; Игровой день считается по времени сервера (МСК, UTC+3), а не по часам компьютера: летом Киев = МСК, зимой Киев на час позади,
+; поэтому норма сбрасывается в 23:00 по Киеву. Сдвиг можно изменить ключом serverUTCOffset в [Preset] settings.ini.
+StatsServerNow() {
+    global serverUTCOffset
+    t := A_NowUTC
+    EnvAdd, t, %serverUTCOffset%, Hours
+    return t
+}
+
 StatsToday() {
-    FormatTime, dateText,, dd.MM.yyyy
+    t := StatsServerNow()
+    FormatTime, dateText, %t%, dd.MM.yyyy
+    return dateText
+}
+
+; === StatsLineServerDate: игровая дата строки чатлога [ЧЧ:ММ:СС] (время в чате — по часам компьютера) ===
+StatsLineServerDate(h, m, s) {
+    global serverUTCOffset
+    localNow := A_Now
+    utcNow := A_NowUTC
+    off := localNow
+    EnvSub, off, %utcNow%, Seconds
+    off := Round(off / 900) * 900
+    stamp := SubStr(localNow, 1, 8) . h . m . s
+    ; Время строки позже текущего — строка со вчерашнего дня.
+    if ((h * 3600 + m * 60 + s) > (A_Hour * 3600 + A_Min * 60 + A_Sec + 120))
+        EnvAdd, stamp, -1, Days
+    shift := serverUTCOffset * 3600 - off
+    EnvAdd, stamp, %shift%, Seconds
+    FormatTime, dateText, %stamp%, dd.MM.yyyy
     return dateText
 }
 
@@ -1527,11 +1678,8 @@ CountAdminActions() {
     }
     for _, line in ChatlogReadNew("stats") {
         if RegExMatch(line, "^\[(\d{2}):(\d{2}):(\d{2})\]", t) {
-            lineTime := t1 * 3600 + t2 * 60 + t3
-            currentTime := A_Hour * 3600 + A_Min * 60 + A_Sec
-            currentDate := A_DD . "." . A_MM . "." . A_YYYY
-            
-            if (lineTime > currentTime)
+            ; Считаем только строки текущего игрового дня (МСК): после 23:00 по Киеву зимой начинается новый день.
+            if (StatsLineServerDate(t1, t2, t3) != StatsToday())
                 continue
             ; Смена дня обрабатывается adminsStatistics(), без GUI и ручного сброса.
         } if RegExMatch(line, "Администратор " . adminName . "(?:\[(\d+)\])? для (\w+(?:_\w+)*)\[(\d+)\]:") || RegExMatch(line, "Агент поддержки " . adminName . "(?:\[(\d+)\])? для (\w+(?:_\w+)*)\[(\d+)\]:") {
@@ -1599,8 +1747,9 @@ ShowMenuNoActivate(guiName) {
 
 ; === InitMenuKeyboard: собрать кнопки текущего меню для клавиатурной навигации ===
 InitMenuKeyboard(hwnd) {
-    global menuNavItems, menuNavIndex
+    global menuNavItems, menuNavIndex, menuNavGuiName, menuHoverHwnd
 
+    menuHoverHwnd := 0
     menuNavItems := []
     menuNavIndex := 0
     WinGet, controls, ControlList, ahk_id %hwnd%
@@ -1616,7 +1765,7 @@ InitMenuKeyboard(hwnd) {
         ControlGetText, controlText, %controlName%, ahk_id %hwnd%
         WinGet, controlStyle, Style, ahk_id %controlHwnd%
         controlType := controlStyle & 0xF
-        menuNavItems.Push({hwnd: controlHwnd, text: controlText, type: controlType})
+        menuNavItems.Push({hwnd: controlHwnd, text: controlText, type: controlType, help: MenuHelpKey(controlText, menuNavGuiName)})
     }
 
     if (menuNavItems.Length())
@@ -1627,8 +1776,9 @@ InitMenuKeyboard(hwnd) {
 
 ; === MenuKeyboardSelect: выбрать элемент и подсветить текущую кнопку ===
 MenuKeyboardSelect(index) {
-    global menuNavItems, menuNavIndex
+    global menuNavItems, menuNavIndex, menuHoverHwnd
 
+    menuHoverHwnd := 0
     count := menuNavItems.Length()
     if (!count)
         return
@@ -1653,19 +1803,46 @@ MenuKeyboardSelect(index) {
     if (selected.type = 0 || selected.type = 1)
         SendMessage, 0x00F4, 1, 1,, ahk_id %selectedHwnd%
 
-    MenuKeyboardUpdateHint(selected.text)
+    MenuKeyboardUpdateHint(selected.text, selected.help)
 }
 
-; === MenuKeyboardUpdateHint: показать выбранный пункт внизу меню ===
-MenuKeyboardUpdateHint(selectedText) {
+; === MenuKeyboardUpdateHint: внизу меню — краткое описание выбранной (наведённой) кнопки ===
+MenuKeyboardUpdateHint(selectedText, helpKey := "") {
     global menuNavGuiName
     if (menuNavGuiName = "")
         return
-    if (selectedText = "")
-        selectionText := "Выберите пункт стрелками или Tab"
-    else
-        selectionText := "Выбрано: " . selectedText
+    if (selectedText = "") {
+        selectionText := "Наведите курсор или выберите кнопку стрелками — здесь появится описание"
+    } else {
+        info := MenuHelpInfo(helpKey)
+        if (IsObject(info))
+            selectionText := info.t . " — " . MenuHelpFill(info.s)
+        else
+            selectionText := "Выбрано: " . selectedText
+    }
+    selectionText := RegExReplace(selectionText, "&", "&&")
     GuiControl, %menuNavGuiName%:, MenuKeyboardSelection, %selectionText%
+}
+
+; === MenuRefreshHint: обновить описание выбранной кнопки после её нажатия (текст кнопки мог измениться) ===
+MenuRefreshHint() {
+    global menuNavIndex
+    if (menuNavIndex >= 1)
+        MenuKeyboardSelect(menuNavIndex)
+}
+
+; === MenuMouseMove: наведение курсора на кнопку показывает её описание внизу окна ===
+MenuMouseMove(wParam, lParam, msg, hwnd) {
+    global menuNavItems, menuNavGuiHwnd, menuHoverHwnd
+    if (!menuNavGuiHwnd || !hwnd || hwnd = menuHoverHwnd)
+        return
+    for i, item in menuNavItems {
+        if (item.hwnd = hwnd) {
+            MenuKeyboardSelect(i)
+            menuHoverHwnd := hwnd
+            return
+        }
+    }
 }
 
 ; === MenuKeyboardEnabled: клавиатурное управление активно только для видимого меню ===
@@ -1729,6 +1906,357 @@ SendEsc(text) {
 }
 
 
+; ====================================================================================================================
+; СПРАВКА: описания кнопок и функций
+; Краткое описание появляется внизу окна при выборе кнопки стрелками или наведении курсора.
+; Подробности: кнопка ❓ в шапке окна (список тем) и F1 на выбранной кнопке (сразу нужная тема).
+; ====================================================================================================================
+
+HAdd(d, key, menu, title, short, long) {
+    d[key] := {t: title, s: short, l: long, m: menu}
+}
+
+; === MenuHelpData: все темы справки (ключ -> заголовок, краткое и подробное описание) ===
+MenuHelpData() {
+    static d := ""
+    if (IsObject(d))
+        return d
+    d := {}
+    HAdd(d, "h_all", "*", "Кнопки в шапке окна", "Перезапуск, остановка, закрытие, назад, справка и сброс.", "⟲ — перезапустить скрипт. Настройки сохраняются, файлы правил перечитываются.`n⊚ — полностью остановить скрипт.`n✘ — закрыть меню (скрипт продолжает работать).`n⮐ — вернуться в предыдущее меню.`n❓ — открыть эту справку для текущего окна.`n♻️ — сбросить значения окна к стандартным (есть в окнах клавиш, ответов и взаимодействия).`n`nНаведите курсор на кнопку или выберите её стрелками — краткое описание появится внизу окна. F1 открывает справку по выбранной кнопке.")
+    HAdd(d, "h_reload", "*", "⟲ Перезапуск", "Перезапускает скрипт. Настройки сохраняются, файлы правил перечитываются.", "Полностью перезапускает скрипт. Все настройки сохраняются. Нажимайте после правки файлов (правила ответов, слова МАТ/ОСК, умные наказания, настройки), если изменения не подхватились сами.")
+    HAdd(d, "h_stop", "*", "⊚ Остановить скрипт", "Полностью останавливает скрипт. Запустить снова — ярлыком или файлом.", "Завершает работу скрипта. Чтобы запустить его снова, откройте ярлык или файл скрипта.")
+    HAdd(d, "h_close", "*", "✘ Закрыть меню", "Закрывает меню. Скрипт продолжает работать.", "Закрывает все окна меню. Скрипт при этом остаётся включённым. Меню открывается клавишей из «Настроек клавиш».")
+    HAdd(d, "h_back", "*", "⮐ Назад", "Возврат в предыдущее меню (Esc делает то же самое).", "Возвращает в предыдущее меню. Клавиша Esc работает так же.")
+    HAdd(d, "h_help", "*", "❓ Справка", "Справка по окну. F1 — справка по выбранной кнопке.", "Открывает список тем по текущему окну. Чтобы сразу прочитать про конкретную кнопку, выберите её и нажмите F1. Внутри справки Esc возвращает на шаг назад.")
+    HAdd(d, "h_reset_keys", "*", "♻️ Сбросить клавиши", "Возвращает клавиши к стандартным: меню — F2, статистика — F10, остальные не назначены.", "Сбрасывает все назначения клавиш: меню получает F2, статистика — F10, остальные клавиши становятся не назначены. Действие применяется сразу и без подтверждения.")
+    HAdd(d, "h_reset_answers", "*", "♻️ Сбросить ответы", "Возвращает тексты ответов к стандартным. Действует сразу, без подтверждения.", "Заменяет все ваши фразы ответов стандартными. Действие применяется сразу и без подтверждения, отменить его нельзя.")
+    HAdd(d, "h_reset_interact", "*", "♻️ Очистить слоты", "Очищает все 10 слотов взаимодействия. Действует сразу.", "Очищает команды и тексты во всех десяти слотах взаимодействия. Действие применяется сразу и без подтверждения.")
+    HAdd(d, "sp_mode", "main", "⇄ Автослежка берёт", "Какой репорт берёт автослежка: последний, случайный или самый старый. Сейчас: {mode}. Нажмите — переключить.", "Автослежка (/sp) берёт репорт из чата и сразу заходит в слежку. Здесь выбирается, какой именно репорт она берёт. Нажатие переключает режим по кругу.`n`n• Последняя — самый новый репорт.`n• Случайная — любой из подходящих репортов.`n• Самая старая — самый давний из подходящих, чтобы никто не ждал дольше всех.`n`nВ режимах «случайная» и «самая старая» учитываются только подходящие репорты: в пределах области видимости, не старше области досягаемости, без ответа и те, за которыми вы ещё не заходили. Режим «последняя» берёт самый новый репорт без этих проверок.")
+    HAdd(d, "sp_pool", "main", "🧠 Область видимости", "Сколько последних репортов учитывает автослежка. Сейчас: {pool}. Нажмите — изменить.", "Область видимости — сколько последних репортов автослежка рассматривает в режимах «случайная» и «самая старая». Значение переключается по кругу: 2, 3, 4, 5, 7, 10.`n`nТолько из этих репортов автослежка может выбрать репорт. В панели репортов остальные показываются как история.")
+    HAdd(d, "sp_age", "main", "⏱ Область досягаемости", "Максимальный возраст репорта для автослежки: от 30 сек до 5 мин. Сейчас: {age}.", "Область досягаемости — насколько свежим должен быть репорт, чтобы автослежка взяла его в режимах «случайная» и «самая старая». Более старые репорты считаются устаревшими: они остаются в панели репортов, но автослежка их пропускает. В режиме «последняя» возраст не проверяется.`n`nВарианты: 30 сек, 1, 2, 3 и 5 мин. Галочка стоит у выбранного значения.")
+    HAdd(d, "report_hints", "main", "💡 Подсказки по репортам", "Скрипт читает новые репорты и показывает готовый ответ или наказание. Нажмите — включить или выключить.", "Когда в чат приходит репорт, скрипт сопоставляет его текст с вашими правилами ответов и со словами МАТ/ОСК. При совпадении на экране появляется подсказка с готовым ответом или наказанием; отправить её можно клавишей Reply + Enter. Если репортов много, подсказки выстраиваются в очередь.`n`nПравила меняются кнопками «Правила ответов» и «Слова МАТ/ОСК».")
+    HAdd(d, "punish_helper", "main", "⚖ Умные наказания", "Короткие команды наказаний: пишете сокращение и ID, скрипт проверяет игрока и выдаёт наказание. Включить / выключить.", "Вы набираете сокращённую команду из файла наказаний (например /epp) и ID игрока. Скрипт командой /id проверяет игрока — в том числе если он в маске, тогда берётся его реальный ник, — подставляет полную команду из файла и отправляет её. Для игроков до 5 уровня включительно наказание смягчается: бан заменяется варном, варн — джейлом на 120, срок остальных наказаний сокращается вдвое. Если включено подтверждение наказаний, перед отправкой появится плашка: Enter — выдать, Esc — отмена.`n`nСокращения задаются в файле умных наказаний. Эта кнопка включает и выключает функцию.")
+    HAdd(d, "hotkeys_btn", "main", "🕹 Настройки клавиш", "Какими клавишами запускаются функции: слежка, ответы, запросы, статистика и другие.", "Открывает окно назначения клавиш. Для каждой функции выберите клавишу в поле; изменения сохраняются сразу. Описание каждой функции — в справке этого окна (кнопка ❓).")
+    HAdd(d, "answers_btn", "main", "⚙️ Настройки ответов", "Тексты быстрых ответов: приветствие при слежке, Reply + 1…0 и «игрок вышел».", "Здесь редактируются фразы, которые скрипт отправляет игрокам: приветствие при слежке, десять быстрых ответов на Reply + 1…0 и ответ на случай, когда игрок вышел из игры. Изменения сохраняются сразу.")
+    HAdd(d, "interact_btn", "main", "🎯 Взаимодействие с игроком", "Десять команд на игрока, за которым вы следите: клавиша Interact + 1…0.", "Настройка десяти слотов команд для игрока, за которым вы следите. В каждом слоте слева — команда (например /mute), справа — текст, который идёт после ID. В игре: клавиша Interact + цифра 1…9 или 0 отправляет команду с ID игрока. Команду можно писать в русской раскладке через точку: .пуемур = /getveh. Пустая команда — слот выключен.")
+    HAdd(d, "punish_file", "main", "📄 Файл умных наказаний", "Открывает файл с сокращениями наказаний (punish.txt) в Блокноте.", "В файле каждая строка — одно правило вида «/сокращение = полная команда», например /epp = /jail 60 Езда по полям. Строки с # — комментарии. Если изменения не подхватились, нажмите ⟲. Файл доступен, когда включены умные наказания.")
+    HAdd(d, "script_settings", "main", "⚙️ Настройки скрипта", "Ввод команд, скорость, уведомления, панель репортов, подтверждения и системные кнопки.", "Общие параметры работы скрипта: способ ввода команд и его скорость, уведомления на экране, панель репортов, подтверждение наказаний, дополнительный модуль и системные действия.")
+    HAdd(d, "answer_rules", "main", "📝 Правила ответов", "Файл answer-rules.txt: по каким словам в репорте скрипт подсказывает ответ.", "Откройте файл и добавьте свои слова и ответы по образцу встроенных правил — их использует функция «Подсказки по репортам». Если изменения не подхватились, нажмите ⟲.")
+    HAdd(d, "punish_words", "main", "📝 Слова МАТ/ОСК", "Файл punish-words.txt: слова, за которые скрипт предлагает наказание.", "Список слов мата и оскорблений и наказаний за них. Функция «Подсказки по репортам» использует его, чтобы предложить наказание. Если изменения не подхватились, нажмите ⟲.")
+    HAdd(d, "stats_toggle", "main", "✔ Подсчёт статистики", "Включает и выключает подсчёт ваших ответов (/pm) и джейлов. Накопленное сохраняется.", "Пока подсчёт включён, скрипт по чатлогу считает ваши ответы игрокам (/pm) и выданные джейлы. При выключении подсчёт останавливается, а накопленная история остаётся. Игровой день для статистики считается по времени сервера (МСК).")
+    HAdd(d, "stats_btn", "main", "📊 Статистика администратора", "Ответы и джейлы за сегодня и последние 3 дня, сравнение с выбранной датой.", "Показывает ваши ответы (PM) и джейлы (J): сегодня, минимум, максимум и среднее за 3 дня, а также разницу с выбранной датой. День меняется в 00:00 по МСК (зимой это 23:00 по Киеву).")
+    HAdd(d, "trucker_btn", "main_player", "🛠️ Секунды ловли заказа", "Показывает или скрывает поля настройки секунд ловли заказа.", "Открывает два поля настройки секунд ловли заказа дальнобойщика. Значения сохраняются сразу.")
+    HAdd(d, "search_date", "main_player", "⤵︎ Поиск по дате", "Показывает доход за выбранную дату (день, месяц, год).", "Введите день, месяц и год и нажмите кнопку: ниже появится заработок за эту дату по видам работы. Если данных нет, будет написано «Пусто».")
+    HAdd(d, "input_mode", "settings", "⚡ Ввод команд", "Как скрипт вводит команды: Автоматический — сразу, Ручной — по символам с паузами. Нажмите — переключить.", "Автоматический: команда вводится в чат сразу целиком. Ручной (имитация): символы вводятся по одному с паузами; скорость выбирается ниже кнопками «Медленно» … «Оч.быстро» или «Настраиваемый». Выбор сохраняется и действует для функций скрипта, которые вводят команды в чат.")
+    HAdd(d, "speed", "settings", "Скорость ввода", "Паузы при ручном вводе. Чем быстрее, тем выше риск потерять символ.", "Работает только в ручном режиме ввода. Готовые наборы (пауза после команды / между символами):`n• Медленно — 260 / 90–140 мс`n• Среднее — 250 / 80–90 мс`n• Быстро — 230 / 60–80 мс`n• Оч.быстро — 160 / 40–60 мс`n`n«Настраиваемый» открывает три поля: пауза после команды и пределы паузы между символами. Значения применяются сразу. Если в чате теряются символы, выберите пресет помедленнее. Ошибочные значения скрипт сам заменяет на безопасные.")
+    HAdd(d, "tooltips", "settings", "💬 Уведомления на экране", "Плашки скрипта на экране: статус, результаты, ошибки. Нажмите — включить или выключить.", "Включает и выключает всплывающие сообщения скрипта: статус, результаты действий и ошибки.")
+    HAdd(d, "ntf_pos", "settings", "↖ Положение уведомлений", "Где на экране появляются плашки. Выберите место — покажется пробная плашка.", "Пять вариантов: слева сверху, справа сверху, слева по центру, слева снизу, справа снизу. Плашки ставятся столбцом от выбранного края, подсказка-ответ всегда сверху столбца. Панель репортов автоматически занимает противоположную сторону, чтобы не перекрывать уведомления.")
+    HAdd(d, "report_panel", "settings", "📋 Панель репортов", "Меню в игре: репорты, их статусы и доступные сейчас действия. Нажмите — включить или выключить.", "Плашка в игре показывает до 10 последних репортов. Сверху — репорт, по которому вы сейчас в слежке, и те, что можно взять автослежкой; ниже — история.`n`nСтатусы:`n✉︎ Ожидает ответа — репорт можно взять.`n♯ Обрабатывается — вы сейчас в слежке по этому репорту (одновременно только один; при заходе за другим игроком прежний теряет статус).`n↷ Пропущен — заходили, но не ответили.`n✘ Игрок вышел — игрока из репорта не оказалось в игре.`n✘ Следит другой — за игроком уже следил другой админ.`n✔ Обработан — ответили вы. ✎ Имя — ответил другой администратор.`n☣ Устарел — старше области досягаемости.`n✘ Вручную — в режиме «последняя» автослежка берёт только самый новый репорт.`n✘ Вне окна — за пределами области видимости.`n`n▶ — этот репорт возьмёт автослежка, ◇ — репорт входит в выборку.`n`nВнизу блок «ДЕЙСТВИЯ»: какие клавиши работают прямо сейчас — подсказка по репорту (Reply + Enter), после захода в слежку приветствие (Reply), затем быстрые ответы (Reply + 1…0) и команды на игрока (Interact + 1…0), а также автослежка и скрытие панели. Показываются только назначенные клавиши.`n`nПанель можно временно скрыть клавишей из «Настроек клавиш» (по умолчанию Insert). Если слежка не продолжается более 10 минут, статус «Обрабатывается» снимается сам. Панель видна, только пока активно окно игры, не перехватывает клики и показывается с противоположной от уведомлений стороны.")
+    HAdd(d, "confirm", "settings", "🛡 Подтверждение наказаний", "Перед выдачей показывает итоговую команду: Enter — выдать, Esc — отмена.", "Работает для умных наказаний и автовыдачи. Перед отправкой появляется плашка с итоговой командой. Enter — выдать, Esc — отмена; в игру эти клавиши в этот момент не передаются. Выключите, если хотите, чтобы наказания отправлялись сразу.")
+    HAdd(d, "extras", "settings", "➕ Доп. возможности", "Запускает ваш файл дополнений ViMeLlY-Features.ahk вместе со скриптом.", "Включите, если у вас есть свой дополнительный AHK-файл: он запускается вместе со скриптом. Выключение не удаляет файл.")
+    HAdd(d, "extras_file", "settings", "📄 Файл дополнений", "Открывает файл дополнений в Блокноте (когда функция включена).", "Открывает ваш файл дополнений в Блокноте. Кнопка работает, когда включены дополнительные возможности. После правки нажмите ⟲.")
+    HAdd(d, "open_settings", "settings", "📂 Открыть файл настроек", "Открывает settings.ini в Блокноте.", "Все настройки скрипта хранятся в этом файле. Правьте его, только если понимаете, что меняете. После правки нажмите ⟲, чтобы скрипт перечитал файл.")
+    HAdd(d, "reset_license", "settings", "🔑 Сбросить ключ доступа", "Удаляет сохранённый ключ и перезапускает скрипт: ключ придётся ввести заново.", "Перед сбросом скрипт спросит подтверждение. После подтверждения сохранённый ключ удаляется, скрипт перезапускается и просит ввести ключ снова.")
+    HAdd(d, "k_menu", "keys", "｢🔗｣ Меню", "Открывает и закрывает меню скрипта.", "Клавиша вызова меню скрипта.")
+    HAdd(d, "k_watch", "keys", "｢🪬｣ Автослежка (/sp)", "Берёт репорт по выбранному режиму и заходит в слежку за игроком.", "Берёт репорт из чата по режиму из главного меню (последняя, случайная или самая старая) и заходит в слежку /sp. После этого клавиша автоответа отправляет репортёру приветствие, а она же с цифрами 1…0 — быстрые ответы. Клавиша взаимодействия с цифрами отправляет команды на игрока, за которым вы следите.")
+    HAdd(d, "k_request", "keys", "｢📑｣ Автозапрос (/z)", "Быстрая отправка /z по номеру обращения. Shift + клавиша — ввести номер заново.", "Первое нажатие просит ввести ID обращения прямо в чате; дальше скрипт отправляет /z, не набирая команду заново. Shift + клавиша — ввести номер заново.")
+    HAdd(d, "k_reply", "keys", "｢📝｣ Автоответ (/pm)", "Reply — приветствие после слежки, Reply + 1…0 — быстрые ответы, Reply + Enter — ответ по подсказке.", "Это клавиша Reply. После автослежки одно нажатие отправляет приветствие репортёру. Reply + 1…0 — быстрые ответы из «Настроек ответов». Приветствие и быстрые ответы уходят репортёру, за которым вы зашли, — новые репорты его не подменяют. Reply + Enter — ответ по показанной подсказке.")
+    HAdd(d, "k_human", "keys", "｢🖋｣ Ручный ответ (/pm)", "Вводит /pm и ID игрока из последнего репорта — текст вы пишете сами.", "Подставляет в чат команду /pm и ID игрока из последнего репорта. Текст ответа вы набираете сами.")
+    HAdd(d, "k_interact", "keys", "｢🎯｣ Взаимодействие", "Interact + 1…0 — команды на игрока, за которым вы следите.", "Клавиша вместе с цифрой 1…9 или 0 отправляет команду из соответствующего слота меню «Взаимодействие» на игрока, за которым вы следите.")
+    HAdd(d, "k_issue", "keys", "｢📜｣ Автовыдача", "Выдаёт наказания списком из файла auto-issue.txt; перед началом просит подтверждение.", "Читает файл auto-issue.txt (если его нет — создаёт). Строки вида «/команда ник [время] [причина]»; пустые строки и комментарии (;, #, //, --) пропускаются. Перед выдачей показывается плашка со списком: подтвердите или отмените.")
+    HAdd(d, "k_stats", "keys", "｢📊｣ Статистика", "Показывает на экране ваши ответы (/pm) и джейлы.", "Показывает подсказку со статистикой: сколько ответов и джейлов у вас за сегодня.")
+    HAdd(d, "k_copy", "keys", "｢📂｣ Копирование", "Вставляет в чат последнюю команду из админ-чата [A].", "Берёт последнюю команду, написанную в админ-чате [A], и вставляет её в строку чата игры. Останется нажать Enter.")
+    HAdd(d, "k_panel", "keys", "｢👁｣ Панель репортов", "Временно скрывает и показывает панель репортов. По умолчанию — Insert.", "Нажатие скрывает панель, повторное — показывает. Скрытие действует до перезапуска скрипта, репорты при этом продолжают учитываться. Насовсем панель отключается кнопкой в настройках скрипта.")
+    HAdd(d, "k_emergency", "keys", "｢🛑｣ Аварийное удаление", "Мгновенно останавливает скрипт.", "Аварийная клавиша: сразу завершает работу скрипта. Запустить его снова можно ярлыком или файлом.")
+    HAdd(d, "k_exit", "keys", "｢⏹｣ Отключение скрипта", "Фиксированное сочетание Ctrl + Alt + Esc отключает скрипт.", "Сочетание Ctrl + Alt + Esc отключает скрипт. Его нельзя изменить.")
+    HAdd(d, "k_autoedit", "keys_player", "｢📍｣ Автоэдит", "Включает и выключает AutoEdit: ожидание нового объявления.", "Первое нажатие включает ожидание нового объявления (AutoEdit), повторное — выключает. О состоянии сообщает подсказка на экране.")
+    HAdd(d, "k_bizlist", "keys_player", "｢🚛｣ Авто Bizlist", "Включает и выключает ожидание нового заказа.", "Первое нажатие включает ожидание нового заказа (AutoBizlist), повторное — выключает. О состоянии сообщает подсказка на экране.")
+    HAdd(d, "a_greet", "answers", "Приветствие (Reply)", "Фраза, которую скрипт отправляет репортёру при слежке.", "Отправляется клавишей Reply после того, как вы зашли в слежку по репорту.")
+    HAdd(d, "a_quick", "answers", "Быстрые ответы (Reply + 1…0)", "Десять готовых фраз: Reply + цифра отправляет выбранную.", "Каждой цифре 1…9 и 0 соответствует своя фраза. Reply + цифра отправляет её репортёру, за которым вы зашли.")
+    HAdd(d, "a_offline", "answers", "Offline", "Ответ, если игрок из репорта вышел из игры.", "Когда игрок из репорта не найден в игре, скрипт показывает подсказку с этой фразой: отправить её репортёру можно клавишей Reply + Enter.")
+    HAdd(d, "st_view", "stats", "Показатели", "PM — ответы, J — джейлы: сегодня, минимум, максимум и среднее за 3 дня.", "Показатели за сегодня и последние три дня: минимум, максимум, среднее. День меняется в 00:00 по МСК (зимой — 23:00 по Киеву).")
+    HAdd(d, "st_search", "stats", "⤵︎ Сравнение с датой", "Введите день, месяц и год — ниже появится разница.", "Введите дату и нажмите кнопку: в поле ниже появятся ответы и джейлы за эту дату. Если данных нет, будет сообщение «ничего не найдено».")
+    HAdd(d, "st_reset", "stats", "Сбросить статистику", "Переносит сегодняшние значения в архив и обнуляет счётчики.", "Текущие значения сохраняются в архив под сегодняшней игровой датой, а счётчики за сегодня обнуляются. Подтверждения нет.")
+    HAdd(d, "i_slots", "interact", "Слоты команд", "Слева команда, справа текст после ID. Пустая команда — слот выключен.", "Десять слотов соответствуют клавишам Interact + 1…9 и 0. Слева — команда (например /mute), справа — текст, который идёт после ID игрока. Итоговая команда: команда, ID, текст.")
+    HAdd(d, "i_ru", "interact", "Русская раскладка", "Команду можно писать через точку: .пуемур = /getveh.", "Если команда начинается с точки, скрипт переведёт её из русской раскладки в английскую: .пуемур станет /getveh.")
+    return d
+}
+
+
+; === MenuHelpOrder: порядок тем справки для окна ===
+MenuHelpOrder(menuId) {
+    global scriptMode
+    o := {}
+    o["main"] := ["sp_mode", "sp_pool", "sp_age", "report_hints", "punish_helper", "hotkeys_btn", "answers_btn", "interact_btn", "punish_file", "script_settings", "answer_rules", "punish_words", "stats_toggle", "stats_btn", "h_all"]
+    o["main_player"] := ["trucker_btn", "search_date", "hotkeys_btn", "script_settings", "h_all"]
+    o["settings"] := ["input_mode", "speed", "tooltips", "ntf_pos", "report_panel", "confirm", "extras", "extras_file", "open_settings", "reset_license", "h_all"]
+    o["keys"] := ["k_menu", "k_watch", "k_request", "k_reply", "k_human", "k_interact", "k_issue", "k_stats", "k_copy", "k_panel", "k_emergency", "k_exit", "h_all"]
+    o["keys_player"] := ["k_menu", "k_autoedit", "k_bizlist", "k_emergency", "k_exit", "h_all"]
+    o["answers"] := ["a_greet", "a_quick", "a_offline", "h_all"]
+    o["stats"] := ["st_view", "st_search", "st_reset", "h_all"]
+    o["interact"] := ["i_slots", "i_ru", "h_all"]
+    if (menuId = "main" && scriptMode != "Admin")
+        menuId := "main_player"
+    if (menuId = "keys" && scriptMode != "Admin")
+        menuId := "keys_player"
+    return o[menuId]
+}
+
+
+; === MenuHelpInfo / MenuHelpFill: тема по ключу; подстановка текущих значений в описание ===
+MenuHelpInfo(key) {
+    if (key = "")
+        return ""
+    d := MenuHelpData()
+    return d.HasKey(key) ? d[key] : ""
+}
+
+MenuHelpFill(text) {
+    global autoSpMode, autoSpPool, autoSpMaxAge
+    if (!InStr(text, "{"))
+        return text
+    text := StrReplace(text, "{mode}", AutoSpModeName(autoSpMode))
+    text := StrReplace(text, "{pool}", autoSpPool)
+    text := StrReplace(text, "{age}", AutoSpAgeText(autoSpMaxAge))
+    return text
+}
+
+; === MenuHelpKey: тема справки по тексту кнопки (текст кнопок с галочками и статусами сопоставляется по названию) ===
+MenuHelpKey(text, guiName) {
+    global helpBtnMap
+    t := Trim(text)
+    if (t = "")
+        return ""
+    if (guiName = "ViMeLlYHelp" && IsObject(helpBtnMap) && helpBtnMap.HasKey(t))
+        return helpBtnMap[t]
+    if (RegExMatch(t, "^⟲"))
+        return "h_reload"
+    if (RegExMatch(t, "^⊚"))
+        return "h_stop"
+    if (RegExMatch(t, "^✘$"))
+        return "h_close"
+    if (RegExMatch(t, "^⮐"))
+        return "h_back"
+    if (RegExMatch(t, "^❓"))
+        return "h_help"
+    if (RegExMatch(t, "^♻")) {
+        if (guiName = "ViMeLlYHotKeys")
+            return "h_reset_keys"
+        if (guiName = "ViMeLlYAnswers")
+            return "h_reset_answers"
+        return "h_reset_interact"
+    }
+    if (InStr(t, "Автослежка берёт"))
+        return "sp_mode"
+    if (InStr(t, "Видимость"))
+        return "sp_pool"
+    if (RegExMatch(t, "^(✔ )?\d+ (сек|мин)$"))
+        return "sp_age"
+    if (InStr(t, "Подсказки по репортам"))
+        return "report_hints"
+    if (InStr(t, "Умные наказания"))
+        return "punish_helper"
+    if (InStr(t, "Настройки клавиш"))
+        return "hotkeys_btn"
+    if (InStr(t, "Настройки ответов"))
+        return "answers_btn"
+    if (InStr(t, "Взаимодействие с игроком"))
+        return "interact_btn"
+    if (InStr(t, "Файл умных наказаний"))
+        return "punish_file"
+    if (InStr(t, "Настройки скрипта"))
+        return "script_settings"
+    if (InStr(t, "Правила ответов"))
+        return "answer_rules"
+    if (InStr(t, "Слова МАТ"))
+        return "punish_words"
+    if (RegExMatch(t, "^[✔✘] Подсчёт"))
+        return "stats_toggle"
+    if (InStr(t, "Статистика администратора"))
+        return "stats_btn"
+    if (InStr(t, "Ввод команд"))
+        return "input_mode"
+    if (RegExMatch(t, "^(✔ )?(Медленно|Среднее|Быстро|Оч\.быстро|Настраиваемый)$"))
+        return "speed"
+    if (InStr(t, "Уведомления на экране"))
+        return "tooltips"
+    if (RegExMatch(t, "^(✔ )?[↖↗←↙↘] "))
+        return "ntf_pos"
+    if (InStr(t, "Панель репортов"))
+        return "report_panel"
+    if (InStr(t, "Подтверждение наказаний"))
+        return "confirm"
+    if (InStr(t, "Доп. возможности"))
+        return "extras"
+    if (InStr(t, "Файл дополнений"))
+        return "extras_file"
+    if (InStr(t, "Открыть файл настроек"))
+        return "open_settings"
+    if (InStr(t, "Сбросить ключ"))
+        return "reset_license"
+    if (InStr(t, "Сбросить статистику"))
+        return "st_reset"
+    if (RegExMatch(t, "^🛠"))
+        return "trucker_btn"
+    if (RegExMatch(t, "^⤵")) {
+        if (guiName = "ViMeLlYStats")
+            return "st_search"
+        return "search_date"
+    }
+    return ""
+}
+
+; === MenuHelpContext: какое окно открыто -> раздел справки и метка, куда вернуться ===
+MenuHelpContext(guiName, ByRef menuId, ByRef retLabel) {
+    menuId := ""
+    retLabel := ""
+    if (guiName = "ViMeLlY") {
+        menuId := "main"
+        retLabel := "Menu"
+    } else if (guiName = "ViMeLlYSettings") {
+        menuId := "settings"
+        retLabel := "ScriptSettings"
+    } else if (guiName = "ViMeLlYHotKeys") {
+        menuId := "keys"
+        retLabel := "HotKeys"
+    } else if (guiName = "ViMeLlYAnswers") {
+        menuId := "answers"
+        retLabel := "Answers"
+    } else if (guiName = "ViMeLlYStats") {
+        menuId := "stats"
+        retLabel := "AdminStatsPanel"
+    } else if (guiName = "ViMeLlYInteract") {
+        menuId := "interact"
+        retLabel := "InteractMenu"
+    }
+}
+
+; === MenuHelpOpen: открыть справку из текущего окна (пустой ключ — список тем, иначе — сразу тема) ===
+MenuHelpOpen(topicKey := "") {
+    global menuNavGuiName
+    guiName := menuNavGuiName
+    MenuHelpContext(guiName, menuId, retLabel)
+    if (menuId = "")
+        return
+    if (guiName = "ViMeLlYHotKeys") {
+        Gosub, SaveHotKeys
+        SetTimer, SaveHotkeys, Off
+        Gui, ViMeLlYHotKeys:Destroy
+    } else if (guiName = "ViMeLlYAnswers") {
+        Gosub, SaveAnswers
+        SetTimer, SaveAnswers, Off
+        Gui, ViMeLlYAnswers:Destroy
+    } else if (guiName = "ViMeLlYStats") {
+        Gui, ViMeLlYStats:Destroy
+    } else if (guiName = "ViMeLlYInteract") {
+        InteractWindowClose()
+    } else if (guiName = "ViMeLlYSettings") {
+        SettingsWindowClose()
+    }
+    Gui, ViMeLlY:Hide
+    MenuHelpShow(menuId, topicKey, retLabel, topicKey != "")
+}
+
+; === MenuHelpSelected: F1 — справка по выбранной кнопке ===
+MenuHelpSelected() {
+    global menuNavGuiName, menuNavItems, menuNavIndex
+    if (!MenuKeyboardEnabled() || menuNavGuiName = "ViMeLlYHelp")
+        return
+    key := ""
+    if (menuNavIndex >= 1 && menuNavIndex <= menuNavItems.Length())
+        key := menuNavItems[menuNavIndex].help
+    MenuHelpOpen(key)
+}
+
+; === MenuHelpNeighbor: предыдущая/следующая тема раздела ===
+MenuHelpNeighbor(menuId, key, step) {
+    order := MenuHelpOrder(menuId)
+    n := order.Length()
+    idx := 0
+    for i, k in order {
+        if (k = key)
+            idx := i
+    }
+    if (idx = 0)
+        return order[step > 0 ? 1 : n]
+    idx += step
+    if (idx < 1)
+        idx := n
+    if (idx > n)
+        idx := 1
+    return order[idx]
+}
+
+; === MenuHelpShow: окно справки: список тем раздела или текст одной темы ===
+MenuHelpShow(menuId, key, retLabel, direct) {
+    global helpMenu, helpKey, helpReturn, helpDirect, helpBtnMap, guiColor, version
+    helpMenu := menuId
+    helpKey := key
+    helpReturn := retLabel
+    helpDirect := direct
+    helpBtnMap := {}
+    titles := {main: "Главная", settings: "Настройки скрипта", keys: "Назначение клавиш", answers: "Ответы", stats: "Статистика", interact: "Взаимодействие"}
+    sectionTitle := "Справка · " . titles[menuId]
+
+    Gui, ViMeLlYHelp:Destroy
+    Gui, ViMeLlYHelp:New,, ViMeLlY Script
+    Gui, ViMeLlYHelp:New, +AlwaysOnTop -Caption +ToolWindow
+    Gui, ViMeLlYHelp:Color, % guiColor
+    Gui, ViMeLlYHelp:Font, s14 Bold, Comic Sans MS
+    Gui, ViMeLlYHelp:Add, Text, w345 Center, ViMeLlY Script
+    Gui, ViMeLlYHelp:Font, s10 Bold, Comic Sans MS
+    Gui, ViMeLlYHelp:Add, Button, yp x344 gHelpBack,⮐
+    Gui, ViMeLlYHelp:Add, Button, yp x+1 gClose,✘
+    MenuSection("ViMeLlYHelp", sectionTitle)
+
+    data := MenuHelpData()
+    if (key = "") {
+        Gui, ViMeLlYHelp:Font, s8, Segoe UI
+        for _, k in MenuHelpOrder(menuId) {
+            btnText := data[k].t
+            helpBtnMap[btnText] := k
+            Gui, ViMeLlYHelp:Add, Button, x17 y+2 w381 gHelpTopic, %btnText%
+        }
+    } else {
+        info := data[key]
+        titleTxt := RegExReplace(info.t, "&", "&&")
+        longTxt := RegExReplace(MenuHelpFill(info.l), "&", "&&")
+        Gui, ViMeLlYHelp:Font, s10 Bold, Segoe UI
+        Gui, ViMeLlYHelp:Add, Text, x17 y+8 w381, %titleTxt%
+        Gui, ViMeLlYHelp:Font, s9 Norm, Segoe UI
+        Gui, ViMeLlYHelp:Add, Text, x17 y+6 w381, %longTxt%
+        Gui, ViMeLlYHelp:Font, s8, Segoe UI
+        Gui, ViMeLlYHelp:Add, Button, x17 y+10 w126 gHelpPrev, ◀ Предыдущая
+        Gui, ViMeLlYHelp:Add, Button, x+1 yp w127 gHelpList, ☰ Все темы
+        Gui, ViMeLlYHelp:Add, Button, x+1 yp w127 gHelpNext, Следующая ▶
+    }
+    Gui, ViMeLlYHelp:Font, s8, Segoe UI
+    Gui, ViMeLlYHelp:Add, Text, x17 y+6 w381 h32 Center vMenuKeyboardSelection, Наведите курсор или выберите кнопку стрелками — здесь появится описание
+    Gui, ViMeLlYHelp:Font, s7, Comic Sans MS
+    Gui, ViMeLlYHelp:Add, Text, x17 y+2 w381 h14 Center vMenuKeyboardHint, ↑ ↓ ← → / Tab — выбор • Enter — выполнить • Esc — назад
+    Gui, ViMeLlYHelp:Font, s7 Bold, Comic Sans MS
+    Gui, ViMeLlYHelp:Add, Link, x25 y+5, ≣≣≣ ❤ <a href="https://t.me/+1eeJ_8vhugYyNmMy">ViMeLlY Script (%version%)</a> | Приятного пользования. ❤ ≣≣≣
+    ShowMenuNoActivate("ViMeLlYHelp")
+}
+
+; === MenuHelpBack: из темы — к списку (или в меню, если открывали по F1); из списка — в меню ===
+MenuHelpBack() {
+    global helpKey, helpDirect, helpMenu, helpReturn
+    if (helpKey != "" && !helpDirect)
+        MenuHelpShow(helpMenu, "", helpReturn, false)
+    else
+        MenuHelpLeave()
+}
+
+MenuHelpLeave() {
+    global helpReturn
+    ret := helpReturn
+    Gui, ViMeLlYHelp:Destroy
+    if (ret != "")
+        Gosub, %ret%
+}
+
+
 ; === MenuSection: заголовок раздела в окне меню ===
 MenuSection(guiName, title) {
     Gui, %guiName%:Font, s9 Bold, Segoe UI
@@ -1744,6 +2272,7 @@ MainStatusText() {
 
 ; === SettingsWindowClose: закрыть окно «Настройки скрипта» (последние значения паузы сохраняются) ===
 SettingsWindowClose() {
+    global settingsOpen
     if (settingsOpen) {
         Gosub, SaveCustomDelays
         settingsOpen := false
@@ -1754,6 +2283,7 @@ SettingsWindowClose() {
 
 
 InteractWindowClose() {
+    global intOpen
     if (intOpen) {
         Gosub, SaveInteract
         intOpen := false
@@ -1767,6 +2297,7 @@ ReturnToMainMenu() {
     Gui, ViMeLlYAnswers:Destroy
     Gui, ViMeLlYHotKeys:Destroy
     Gui, ViMeLlYStats:Destroy
+    Gui, ViMeLlYHelp:Destroy
     InteractWindowClose()
     SettingsWindowClose()
     ShowMenuNoActivate("ViMeLlY")
@@ -1779,6 +2310,7 @@ CloseMenuWindows() {
     Gui, ViMeLlYHotKeys:Destroy
     Gui, ViMeLlYAnswers:Destroy
     Gui, ViMeLlYStats:Destroy
+    Gui, ViMeLlYHelp:Destroy
     InteractWindowClose()
     SettingsWindowClose()
     SetTimer, SaveHotkeys, Off
@@ -1794,6 +2326,10 @@ MenuKeyboardEscape() {
     global menuNavGuiName
     if (!MenuKeyboardEnabled())
         return
+    if (menuNavGuiName = "ViMeLlYHelp") {
+        MenuHelpBack()
+        return
+    }
     if (menuNavGuiName = "ViMeLlY")
         CloseMenuWindows()
     else
@@ -1810,7 +2346,7 @@ Menu:
     ansLogStatus := reportLog ? "✔ Подсказки по репортам" : "✘ Подсказки по репортам"
     autoSpModeName := AutoSpModeName(autoSpMode)
     punishHelperSwitch := punishHelperStatus ? "✔ Умные наказания" : "✘ Умные наказания"
-    adminStatsSwitch := adminStatsStatus ? "✔" : "✘"
+    adminStatsSwitch := adminStatsStatus ? "✔ Подсчёт" : "✘ Подсчёт"
 
     Gui, ViMeLlY:New,, ViMeLlY Script
     Gui, ViMeLlY:New, +AlwaysOnTop -Caption +ToolWindow
@@ -1818,7 +2354,8 @@ Menu:
     Gui, ViMeLlY:Font, s14 Bold, Comic Sans MS
     Gui, ViMeLlY:Add, Text, w345 Center, ViMeLlY Script - Главная
     Gui, ViMeLlY:Font, s10 Bold, Comic Sans MS
-    Gui, ViMeLlY:Add, Button, yp x317 gReload,⟲
+    Gui, ViMeLlY:Add, Button, yp x288 gHelpOpen,❓
+    Gui, ViMeLlY:Add, Button, yp x+1 gReload,⟲
     Gui, ViMeLlY:Add, Button, yp x+1 gStop,⊚
     Gui, ViMeLlY:Add, Button, yp x+1 gClose,✘
     Gui, ViMeLlY:Font, s8, Segoe UI
@@ -1827,10 +2364,9 @@ Menu:
     if (scriptMode == "Admin") {
         MenuSection("ViMeLlY", "Помощник по репортам")
         Gui, ViMeLlY:Font, s8, Segoe UI
-        Gui, ViMeLlY:Add, Button, x17 y+2 w271 gAutoSpMode_Cycle vAutoSpModeButton, ⇄ Выбор жалобы: %autoSpModeName%
-        Gui, ViMeLlY:Add, Button, x+1 yp w109 gAutoSpPool_Cycle vAutoSpPoolButton, 🧠 Помнит: %autoSpPool%
-        Gui, ViMeLlY:Font, s7, Segoe UI
-        Gui, ViMeLlY:Add, Text, x17 y+3 w381 Center, Сколько скрипт помнит репорт (режимы «случайная» и «самая старая»):
+        Gui, ViMeLlY:Add, Button, x17 y+2 w271 gAutoSpMode_Cycle vAutoSpModeButton, ⇄ Автослежка берёт: %autoSpModeName%
+        Gui, ViMeLlY:Add, Button, x+1 yp w109 gAutoSpPool_Cycle vAutoSpPoolButton, 🧠 Видимость: %autoSpPool%
+        Gui, ViMeLlY:Add, Text, x17 y+4 w381, ⏱ Область досягаемости репорта:
         Gui, ViMeLlY:Font, s8, Segoe UI
         Gui, ViMeLlY:Add, Button, x17 y+1 w75 gAutoSpAgeSelect vAutoSpAge1, % AutoSpAgeBtnText(1)
         Gui, ViMeLlY:Add, Button, x+1 yp w75 gAutoSpAgeSelect vAutoSpAge2, % AutoSpAgeBtnText(2)
@@ -1839,8 +2375,6 @@ Menu:
         Gui, ViMeLlY:Add, Button, x+1 yp w77 gAutoSpAgeSelect vAutoSpAge5, % AutoSpAgeBtnText(5)
         Gui, ViMeLlY:Add, Button, x17 y+1 w190 gReportLog_ToggleStatus vStatusLogButton, %ansLogStatus%
         Gui, ViMeLlY:Add, Button, x+1 yp w190 gPunishHelper_ToggleStatus vPunishHelperButton, %punishHelperSwitch%
-        Gui, ViMeLlY:Font, s7, Segoe UI
-        Gui, ViMeLlY:Add, Text, x17 y+2 w381 Center vAutoSpHint, % AutoSpHintText()
 
         MenuSection("ViMeLlY", "Настройки")
         Gui, ViMeLlY:Font, s8, Segoe UI
@@ -1849,13 +2383,13 @@ Menu:
         Gui, ViMeLlY:Add, Button, x17 y+1 w381 gInteractMenu, 🎯 Взаимодействие с игроком
         Gui, ViMeLlY:Add, Button, x17 y+1 w190 gOpenPunishHelper, 📄 Файл умных наказаний
         Gui, ViMeLlY:Add, Button, x+1 yp w190 gScriptSettings,⚙️ Настройки скрипта྾
+        Gui, ViMeLlY:Add, Button, x17 y+1 w190 gOpenAnswerRules, 📝 Правила ответов
+        Gui, ViMeLlY:Add, Button, x+1 yp w190 gOpenPunishWords, 📝 Слова МАТ/ОСК
 
         MenuSection("ViMeLlY", "Статистика")
         Gui, ViMeLlY:Font, s8, Segoe UI
-        Gui, ViMeLlY:Add, Button, x17 y+2 w20 vadminStatsButton gToggleAdminStats, %adminStatsSwitch%
-        Gui, ViMeLlY:Add, Button, x+1 yp w360 gAdminStatsPanel, 📊 Статистика администратора
-        Gui, ViMeLlY:Font, s7, Segoe UI
-        Gui, ViMeLlY:Add, Text, x17 y+2 w381 Center, Кнопка слева включает или выключает подсчёт ответов и джейлов
+        Gui, ViMeLlY:Add, Button, x17 y+2 w100 vadminStatsButton gToggleAdminStats, %adminStatsSwitch%
+        Gui, ViMeLlY:Add, Button, x+1 yp w280 gAdminStatsPanel, 📊 Статистика администратора
     } else {
         TruckerIncome := GetIncomeByDate(A_DD . "." . A_MM . "." . A_YYYY, "Доставка продуктов")
         GardensIncome := GetIncomeByDate(A_DD . "." . A_MM . "." . A_YYYY, "Продажа урожая")
@@ -1910,10 +2444,10 @@ Menu:
         Gui, ViMeLlY:Add, Button, x+1 yp w190 gScriptSettings,⚙️ Настройки скрипта྾
     }
 
-    Gui, ViMeLlY:Font, s9, Comic Sans MS
-    Gui, ViMeLlY:Add, Text, x17 y+0 w381 h14 Center vMenuKeyboardSelection, Выберите пункт стрелками или Tab
-    Gui, ViMeLlY:Font, s7, Comic Sans MS 
-    Gui, ViMeLlY:Add, Text, x17 y+4 w381 h14 Center vMenuKeyboardHint, ↑ ↓ ← → / Tab — выбор • Enter — выполнить • Esc — назад/закрыть
+    Gui, ViMeLlY:Font, s8, Segoe UI
+    Gui, ViMeLlY:Add, Text, x17 y+6 w381 h32 Center vMenuKeyboardSelection, Наведите курсор или выберите кнопку стрелками — здесь появится описание
+    Gui, ViMeLlY:Font, s7, Comic Sans MS
+    Gui, ViMeLlY:Add, Text, x17 y+2 w381 h14 Center vMenuKeyboardHint, ↑ ↓ ← → / Tab — выбор • Enter — выполнить • F1 — справка • Esc — назад
     Gui, ViMeLlY:Font, s7 Bold, Comic Sans MS
     Gui, ViMeLlY:Add, Link, x25 y+5, ≣≣≣ ❤ <a href="https://t.me/+1eeJ_8vhugYyNmMy">ViMeLlY Script (%version%)</a> | Приятного пользования. ❤ ≣≣≣
     ShowMenuNoActivate("ViMeLlY")
@@ -1932,6 +2466,7 @@ HotKeys:
     IniRead, autoEditKey, %settingsFile%, Keys, autoEdit
     IniRead, autoBizlistKey, %settingsFile%, Keys, autoBizlist
     IniRead, emergencyDeleteKey, %settingsFile%, Keys, EmergencyDelete
+    IniRead, panelHideKey, %settingsFile%, Keys, PanelHide, Insert
 
     Gui, ViMeLlY:Hide
     Gui, ViMeLlYHotKeys:New,, ViMeLlY Script
@@ -1940,13 +2475,12 @@ HotKeys:
     Gui, ViMeLlYHotKeys:Font, s14 Bold, Comic Sans MS
     Gui, ViMeLlYHotKeys:Add, Text, w400 Center, ViMeLlY Script
     Gui, ViMeLlYHotKeys:Font, s10 Bold, Comic Sans MS
-    Gui, ViMeLlYHotKeys:Add, Button, yp x320 gReload,⟲
+    Gui, ViMeLlYHotKeys:Add, Button, yp x291 gHelpOpen,❓
+    Gui, ViMeLlYHotKeys:Add, Button, yp x+1 gReload,⟲
     Gui, ViMeLlYHotKeys:Add, Button, yp x+1 gResetHotkeys,♻️
     Gui, ViMeLlYHotKeys:Add, Button, yp x+1 gBack,⮐
     Gui, ViMeLlYHotKeys:Add, Button, yp x+1 gClose,✘
     Gui, ViMeLlYHotKeys:Add, Text, y+1 xm w400 Center, ‧  ‧ ‧ ‧ ‧‧‧‧‧‧‧‧‧‧‧‧‧‧‧‧‧‧‧‧‧ Назначение клавиш ‧‧‧‧‧‧‧‧‧‧‧‧‧‧‧‧‧‧‧‧‧ ‧  ‧ ‧ ‧
-    Gui, ViMeLlYHotKeys:Font, s7, Segoe UI
-    Gui, ViMeLlYHotKeys:Add, Text, xm y+2 w400 Center, Автоответ — это клавиша Reply: после слежки приветствие, Reply + Enter — ответ по подсказке, Reply + 1…0 — быстрые ответы.
     Gui, ViMeLlYHotKeys:Font, s8, Segoe UI
     Gui, ViMeLlYHotKeys:Add, Text, y+5 x25 w30, ｢🔗｣
     Gui, ViMeLlYHotKeys:Add, Text, yp x+0 w115 Center, Меню
@@ -1988,6 +2522,10 @@ HotKeys:
         Gui, ViMeLlYHotKeys:Add, Text, yp x+0 w125 Center,Копирование
         Gui, ViMeLlYHotKeys:Add, Hotkey, vHK_CopyAChat x185 yp h18 +0x200 w100, %copyAChatKey%
         Gui, ViMeLlYHotKeys:Add, Text, yp vHK_CopyAChatText x+10 w130, % "‖ " .  ReadableHotkey(copyAChatKey)
+        Gui, ViMeLlYHotKeys:Add, Text, y+3 x25 w30, ｢👁｣
+        Gui, ViMeLlYHotKeys:Add, Text, yp x+0 w125 Center,Панель репортов
+        Gui, ViMeLlYHotKeys:Add, Hotkey, vHK_PanelHide gValidateKey x185 yp h18 +0x200 w100, %panelHideKey%
+        Gui, ViMeLlYHotKeys:Add, Text, yp vHK_PanelHideText x+10 w130, % "‖ " .  ReadableHotkey(panelHideKey)
     } else {
         Gui, ViMeLlYHotKeys:Add, Text, y+5 x25 w30, ｢📍｣
         Gui, ViMeLlYHotKeys:Add, Text, yp x+0 w125 Center,Автоэдит
@@ -2008,9 +2546,10 @@ HotKeys:
     Gui, ViMeLlYHotKeys:Add, Text, yp x+0 w125 Center,Отключение скрипта
     Gui, ViMeLlYHotKeys:Add, Edit, x185 yp h18 +0x200 w100 ReadOnly, Ctrl + Alt + Esc
     Gui, ViMeLlYHotKeys:Add, Text, yp x+10, ‖ Ctrl + Alt + Esc
+    Gui, ViMeLlYHotKeys:Font, s8, Segoe UI
+    Gui, ViMeLlYHotKeys:Add, Text, x25 y+6 w400 h32 Center vMenuKeyboardSelection, Наведите курсор или выберите кнопку стрелками — здесь появится описание
     Gui, ViMeLlYHotKeys:Font, s7, Comic Sans MS
-    Gui, ViMeLlYHotKeys:Add, Text, x25 y+4 w400 h14 Center vMenuKeyboardHint, ↑ ↓ ← → / Tab — выбор • Enter — выполнить • Esc — назад/закрыть
-    Gui, ViMeLlYHotKeys:Add, Text, x25 y+0 w400 h14 Center vMenuKeyboardSelection, Выберите пункт стрелками или Tab
+    Gui, ViMeLlYHotKeys:Add, Text, x25 y+2 w400 h14 Center vMenuKeyboardHint, ↑ ↓ ← → / Tab — выбор • Enter — выполнить • F1 — справка • Esc — назад
     Gui, ViMeLlYHotKeys:Font, s7 Bold, Comic Sans MS
     Gui, ViMeLlYHotKeys:Add, Link, x55 y+5, ≣≣≣ ❤ <a href="https://t.me/+1eeJ_8vhugYyNmMy">ViMeLlY Script (%version%)</a> | Приятного пользования. ❤ ≣≣≣
     ShowMenuNoActivate("ViMeLlYHotKeys")
@@ -2054,13 +2593,12 @@ Answers:
     Gui, ViMeLlYAnswers:Font, s14 Bold, Comic Sans MS
     Gui, ViMeLlYAnswers:Add, Text, w380 Center, ViMeLlY Script
     Gui, ViMeLlYAnswers:Font, s10 Bold, Comic Sans MS
-    Gui, ViMeLlYAnswers:Add, Button, yp x300 gReload,⟲
+    Gui, ViMeLlYAnswers:Add, Button, yp x271 gHelpOpen,❓
+    Gui, ViMeLlYAnswers:Add, Button, yp x+1 gReload,⟲
     Gui, ViMeLlYAnswers:Add, Button, yp x+1 gResetAnswers,♻️
     Gui, ViMeLlYAnswers:Add, Button, yp x+1 gBack,⮐
     Gui, ViMeLlYAnswers:Add, Button, yp x+1 gClose,✘
     Gui, ViMeLlYAnswers:Add, Text, y+1 xm w380 Center, ‧  ‧ ‧ ‧ ‧‧‧‧‧‧‧‧‧‧‧‧‧‧ Редактирование ответов ‧‧‧‧‧‧‧‧‧‧‧‧‧‧ ‧  ‧ ‧ ‧
-    Gui, ViMeLlYAnswers:Font, s7, Segoe UI
-    Gui, ViMeLlYAnswers:Add, Text, xm y+2 w380 Center, Reply — приветствие при слежке, Reply + 1…0 — быстрые ответы, Offline — игрок вышел.
     Gui, ViMeLlYAnswers:Font, s8, Cascadia Mono
     Gui, ViMeLlYAnswers:Add, Text, y+1 x25, %kR% »
     Gui, ViMeLlYAnswers:Add, Edit, x100 yp h17 Limit128 +0x200 w290 vSP, %SP%
@@ -2086,9 +2624,10 @@ Answers:
     Gui, ViMeLlYAnswers:Add, Edit, x100 yp h17 Limit128 +0x200 w290 vAns_0, %Ans0%
     Gui, ViMeLlYAnswers:Add, Text, y+1 x25, Offline »
     Gui, ViMeLlYAnswers:Add, Edit, x100 yp h17 Limit128 +0x200 w290 vAns_Off, %AnsOff%
+    Gui, ViMeLlYAnswers:Font, s8, Segoe UI
+    Gui, ViMeLlYAnswers:Add, Text, x25 y+6 w380 h32 Center vMenuKeyboardSelection, Наведите курсор или выберите кнопку стрелками — здесь появится описание
     Gui, ViMeLlYAnswers:Font, s7, Comic Sans MS
-    Gui, ViMeLlYAnswers:Add, Text, x25 y+4 w380 h14 Center vMenuKeyboardHint, ↑ ↓ ← → / Tab — выбор • Enter — выполнить • Esc — назад/закрыть
-    Gui, ViMeLlYAnswers:Add, Text, x25 y+0 w380 h14 Center vMenuKeyboardSelection, Выберите пункт стрелками или Tab
+    Gui, ViMeLlYAnswers:Add, Text, x25 y+2 w380 h14 Center vMenuKeyboardHint, ↑ ↓ ← → / Tab — выбор • Enter — выполнить • F1 — справка • Esc — назад
     Gui, ViMeLlYAnswers:Font, s7 Bold, Comic Sans MS
     Gui, ViMeLlYAnswers:Add, Link, x45 y+5, ≣≣≣ ❤ <a href="https://t.me/+1eeJ_8vhugYyNmMy">ViMeLlY Script (%version%)</a> | Приятного пользования. ❤ ≣≣≣
     ShowMenuNoActivate("ViMeLlYAnswers")
@@ -2117,12 +2656,11 @@ AdminStatsPanel:
     Gui, ViMeLlYStats:Font, s14 Bold, Comic Sans MS
     Gui, ViMeLlYStats:Add, Text, w380 Center, ViMeLlY Script
     Gui, ViMeLlYStats:Font, s10 Bold, Comic Sans MS
-    Gui, ViMeLlYStats:Add, Button, yp x310 gReload,⟲
+    Gui, ViMeLlYStats:Add, Button, yp x281 gHelpOpen,❓
+    Gui, ViMeLlYStats:Add, Button, yp x+1 gReload,⟲
     Gui, ViMeLlYStats:Add, Button, yp x+1 gBack,⮐
     Gui, ViMeLlYStats:Add, Button, yp x+1 gClose,✘
     Gui, ViMeLlYStats:Add, Text, y+1 xm w380 Center, ‧  ‧ ‧ ‧ ‧‧‧‧‧‧‧‧‧‧‧‧‧‧‧‧‧‧‧‧‧‧‧‧‧ Статистика ‧‧‧‧‧‧‧‧‧‧‧‧‧‧‧‧‧‧‧‧‧‧‧‧‧ ‧  ‧ ‧ ‧
-    Gui, ViMeLlYStats:Font, s7, Segoe UI
-    Gui, ViMeLlYStats:Add, Text, xm y+2 w380 Center, Ответы (PM) и джейлы (J) за сегодня и последние 3 дня.
     Gui, ViMeLlYStats:Font, s9, Cascadia Mono
     Gui, ViMeLlYStats:Add, Text, w380 y+1 Center, • Администратор: %adminName% ‖ Дата: %A_DD%.%A_MM%.%A_YYYY%
     Gui, ViMeLlYStats:Add, Text, x25 y+1 w200,ℹ️ Изменения за 3 дня:
@@ -2142,9 +2680,10 @@ AdminStatsPanel:
     Gui, ViMeLlYStats:Add, Edit, x+3 h18 yp w145 ReadOnly Center vSearchResultAdmin, Пусто
     Gui, ViMeLlYStats:Add, Text, x27 y+1 w200,- Jail'ов: %changeJails%
     Gui, ViMeLlYStats:Add, Button, x+3 yp h18 w145 gClearAnswers, Сбросить статистику
+    Gui, ViMeLlYStats:Font, s8, Segoe UI
+    Gui, ViMeLlYStats:Add, Text, x25 y+6 w380 h32 Center vMenuKeyboardSelection, Наведите курсор или выберите кнопку стрелками — здесь появится описание
     Gui, ViMeLlYStats:Font, s7, Comic Sans MS
-    Gui, ViMeLlYStats:Add, Text, x25 y+4 w380 h14 Center vMenuKeyboardHint, ↑ ↓ ← → / Tab — выбор • Enter — выполнить • Esc — назад/закрыть
-    Gui, ViMeLlYStats:Add, Text, x25 y+0 w380 h14 Center vMenuKeyboardSelection, Выберите пункт стрелками или Tab
+    Gui, ViMeLlYStats:Add, Text, x25 y+2 w380 h14 Center vMenuKeyboardHint, ↑ ↓ ← → / Tab — выбор • Enter — выполнить • F1 — справка • Esc — назад
     Gui, ViMeLlYStats:Font, s7 Bold, Comic Sans MS
     Gui, ViMeLlYStats:Add, Link, x45 y+5, ≣≣≣ ❤ <a href="https://t.me/+1eeJ_8vhugYyNmMy">ViMeLlY Script (%version%)</a> | Приятного пользования. ❤ ≣≣≣
     
@@ -2211,7 +2750,7 @@ Return
 ScriptSettings:
     guiColorFunc()
     inputBtnText := isHumanInput ? "✋ Ввод команд: Ручной (имитация) ☺" : "⚡ Ввод команд: Автоматический ♛"
-    tipBtnText := isToolTipActive ? "💬 Всплывающие подсказки: ✔ Включены" : "💬 Всплывающие подсказки: ✘ Выключены"
+    tipBtnText := isToolTipActive ? "💬 Уведомления на экране: ✔ Включены" : "💬 Уведомления на экране: ✘ Выключены"
     addBtnText := additionalFeaturesStatus ? "➕ Доп. возможности: ✔ Включены" : "➕ Доп. возможности: ✘ Выключены"
 
     Gui, ViMeLlY:Hide
@@ -2221,7 +2760,8 @@ ScriptSettings:
     Gui, ViMeLlYSettings:Font, s14 Bold, Comic Sans MS
     Gui, ViMeLlYSettings:Add, Text, w345 Center, ViMeLlY Script
     Gui, ViMeLlYSettings:Font, s10 Bold, Comic Sans MS
-    Gui, ViMeLlYSettings:Add, Button, yp x317 gReload,⟲
+    Gui, ViMeLlYSettings:Add, Button, yp x288 gHelpOpen,❓
+    Gui, ViMeLlYSettings:Add, Button, yp x+1 gReload,⟲
     Gui, ViMeLlYSettings:Add, Button, yp x+1 gBack,⮐
     Gui, ViMeLlYSettings:Add, Button, yp x+1 gClose,✘
     Gui, ViMeLlYSettings:Add, Text, y+1 x17 w381 Center, ‧  ‧ ‧ ‧ ‧‧‧‧‧‧‧‧‧‧‧‧‧‧ Настройки скрипта ‧‧‧‧‧‧‧‧‧‧‧‧‧‧ ‧  ‧ ‧ ‧
@@ -2229,11 +2769,9 @@ ScriptSettings:
     MenuSection("ViMeLlYSettings", "Ввод команд")
     Gui, ViMeLlYSettings:Font, s8, Segoe UI
     Gui, ViMeLlYSettings:Add, Button, x17 y+2 w381 gToggleInputMode vInputModeButton, %inputBtnText%
-    Gui, ViMeLlYSettings:Font, s7, Segoe UI
-    Gui, ViMeLlYSettings:Add, Text, x17 y+2 w381 Center, Ручной — команды печатаются по символам с паузами. Автоматический — мгновенно.
     if (scriptMode == "Admin") {
         Gui, ViMeLlYSettings:Font, s8, Segoe UI
-        Gui, ViMeLlYSettings:Add, Text, x17 y+5 w381, Скорость ввода (паузы при ручном вводе):
+        Gui, ViMeLlYSettings:Add, Text, x17 y+5 w381, Скорость ручного ввода:
         Gui, ViMeLlYSettings:Add, Button, x17 y+1 w75 gSetup1 vSetup_1, % (currentSetup = "Медленно" ? "✔ Медленно" : "Медленно")
         Gui, ViMeLlYSettings:Add, Button, x+1 yp w65 gSetup2 vSetup_2, % (currentSetup = "Среднее" ? "✔ Среднее" : "Среднее")
         Gui, ViMeLlYSettings:Add, Button, x+1 yp w65 gSetup3 vSetup_3, % (currentSetup = "Быстро" ? "✔ Быстро" : "Быстро")
@@ -2251,36 +2789,34 @@ ScriptSettings:
             Gui, ViMeLlYSettings:Add, Edit, x+0 yp-3 w80 h18 Center vMySetup_d1, %d_1%
             Gui, ViMeLlYSettings:Add, Text, x17 y+5 w300, Пауза между символами, до (мс):
             Gui, ViMeLlYSettings:Add, Edit, x+0 yp-3 w80 h18 Center vMySetup_d2, %d_2%
-            Gui, ViMeLlYSettings:Font, s7, Segoe UI
-            Gui, ViMeLlYSettings:Add, Text, x17 y+3 w381 Center, Меньше значения — быстрее, но выше риск потерять символ. Применяется после ⟲.
             SetTimer, SaveCustomDelays, 150
         } else {
             SetTimer, SaveCustomDelays, Off
-            Gui, ViMeLlYSettings:Add, Text, x17 y+2 w381 Center, Готовые наборы пауз между символами. «Настраиваемый» — свои значения.
         }
     }
 
-    MenuSection("ViMeLlYSettings", "Подсказки")
+    MenuSection("ViMeLlYSettings", "Уведомления")
     Gui, ViMeLlYSettings:Font, s8, Segoe UI
     Gui, ViMeLlYSettings:Add, Button, x17 y+2 w381 gToggleToolTips vToolTipsButton, %tipBtnText%
-    Gui, ViMeLlYSettings:Font, s7, Segoe UI
-    Gui, ViMeLlYSettings:Add, Text, x17 y+2 w381 Center, Сообщения скрипта плашками на экране: статус, ответы, ошибки.
     Gui, ViMeLlYSettings:Font, s8, Segoe UI
-    Gui, ViMeLlYSettings:Add, Button, x17 y+4 w190 gNtfPosSelect vNtfPos1, % NtfPosText(1)
+    Gui, ViMeLlYSettings:Add, Text, x17 y+5 w381, Где показывать уведомления:
+    Gui, ViMeLlYSettings:Add, Button, x17 y+2 w190 gNtfPosSelect vNtfPos1, % NtfPosText(1)
     Gui, ViMeLlYSettings:Add, Button, x+1 yp w190 gNtfPosSelect vNtfPos2, % NtfPosText(2)
     Gui, ViMeLlYSettings:Add, Button, x17 y+1 w381 gNtfPosSelect vNtfPos3, % NtfPosText(3)
     Gui, ViMeLlYSettings:Add, Button, x17 y+1 w190 gNtfPosSelect vNtfPos4, % NtfPosText(4)
     Gui, ViMeLlYSettings:Add, Button, x+1 yp w190 gNtfPosSelect vNtfPos5, % NtfPosText(5)
-    Gui, ViMeLlYSettings:Font, s7, Segoe UI
-    Gui, ViMeLlYSettings:Add, Text, x17 y+2 w381 Center, Положение плашек: выберите угол или середину слева, на экране появится пробная плашка.
 
     if (scriptMode == "Admin") {
+        MenuSection("ViMeLlYSettings", "Панель репортов")
+        Gui, ViMeLlYSettings:Font, s8, Segoe UI
+        Gui, ViMeLlYSettings:Add, Button, x17 y+2 w381 gToggleReportPanel vReportPanelButton, % ReportPanelBtnText()
+        MenuSection("ViMeLlYSettings", "Наказания")
+        Gui, ViMeLlYSettings:Font, s8, Segoe UI
+        Gui, ViMeLlYSettings:Add, Button, x17 y+2 w381 gToggleConfirm vPunishConfirmButton, % PunishConfirmBtnText()
         MenuSection("ViMeLlYSettings", "Дополнения")
         Gui, ViMeLlYSettings:Font, s8, Segoe UI
-        Gui, ViMeLlYSettings:Add, Button, x17 y+2 w290 gAdditionalFeatures_ToggleStatus vAdditionalFeaturesButton, %addBtnText%
-        Gui, ViMeLlYSettings:Add, Button, x+1 yp w90 gOpenAdditionalFeatures, 📄 Файл
-        Gui, ViMeLlYSettings:Font, s7, Segoe UI
-        Gui, ViMeLlYSettings:Add, Text, x17 y+2 w381 Center, Запускает ваш файл дополнений вместе со скриптом.
+        Gui, ViMeLlYSettings:Add, Button, x17 y+2 w250 gAdditionalFeatures_ToggleStatus vAdditionalFeaturesButton, %addBtnText%
+        Gui, ViMeLlYSettings:Add, Button, x+1 yp w130 gOpenAdditionalFeatures, 📄 Файл дополнений
     }
 
     MenuSection("ViMeLlYSettings", "Система")
@@ -2288,10 +2824,10 @@ ScriptSettings:
     Gui, ViMeLlYSettings:Add, Button, x17 y+2 w190 gOpenSettings, 📂 Открыть файл настроек
     Gui, ViMeLlYSettings:Add, Button, x+1 yp w190 gResetLicenseKey, 🔑 Сбросить ключ доступа
 
-    Gui, ViMeLlYSettings:Font, s9, Comic Sans MS
-    Gui, ViMeLlYSettings:Add, Text, x17 y+4 w381 h14 Center vMenuKeyboardSelection, Выберите пункт стрелками или Tab
+    Gui, ViMeLlYSettings:Font, s8, Segoe UI
+    Gui, ViMeLlYSettings:Add, Text, x17 y+6 w381 h32 Center vMenuKeyboardSelection, Наведите курсор или выберите кнопку стрелками — здесь появится описание
     Gui, ViMeLlYSettings:Font, s7, Comic Sans MS
-    Gui, ViMeLlYSettings:Add, Text, x17 y+4 w381 h14 Center vMenuKeyboardHint, ↑ ↓ ← → / Tab — выбор • Enter — выполнить • Esc — назад/закрыть
+    Gui, ViMeLlYSettings:Add, Text, x17 y+2 w381 h14 Center vMenuKeyboardHint, ↑ ↓ ← → / Tab — выбор • Enter — выполнить • F1 — справка • Esc — назад
     Gui, ViMeLlYSettings:Font, s7 Bold, Comic Sans MS
     Gui, ViMeLlYSettings:Add, Link, x25 y+5, ≣≣≣ ❤ <a href="https://t.me/+1eeJ_8vhugYyNmMy">ViMeLlY Script (%version%)</a> | Приятного пользования. ❤ ≣≣≣
     ShowMenuNoActivate("ViMeLlYSettings")
@@ -2309,8 +2845,21 @@ Return
 ToggleToolTips:
     isToolTipActive := !isToolTipActive
     IniWrite, %isToolTipActive%, %settingsFile%, Preset, isToolTipActive
-    newTipText := isToolTipActive ? "💬 Всплывающие подсказки: ✔ Включены" : "💬 Всплывающие подсказки: ✘ Выключены"
+    newTipText := isToolTipActive ? "💬 Уведомления на экране: ✔ Включены" : "💬 Уведомления на экране: ✘ Выключены"
     GuiControl, ViMeLlYSettings:, ToolTipsButton, %newTipText%
+Return
+
+ToggleReportPanel:
+    reportPanelEnabled := reportPanelEnabled ? 0 : 1
+    IniWrite, %reportPanelEnabled%, %settingsFile%, Preset, reportPanel
+    GuiControl, ViMeLlYSettings:, ReportPanelButton, % ReportPanelBtnText()
+    ReportPanelApply()
+Return
+
+ToggleConfirm:
+    punishConfirmEnabled := punishConfirmEnabled ? 0 : 1
+    IniWrite, %punishConfirmEnabled%, %settingsFile%, Preset, punishConfirm
+    GuiControl, ViMeLlYSettings:, PunishConfirmButton, % PunishConfirmBtnText()
 Return
 
 ; === NtfPosSelect: выбор положения плашек (кнопки NtfPos1…NtfPos5 в настройках) ===
@@ -2363,6 +2912,7 @@ ResetHotkeys:
     IniDelete, %settingsFile%, Keys, autoEdit
     IniDelete, %settingsFile%, Keys, autoBizlist
     IniDelete, %settingsFile%, Keys, EmergencyDelete
+    IniDelete, %settingsFile%, Keys, PanelHide
 
     IniWrite, F2, %settingsFile%, Keys, Menu
     IniWrite, %A_Space%, %settingsFile%, Keys, Watch
@@ -2376,6 +2926,7 @@ ResetHotkeys:
         IniWrite, %A_Space%, %settingsFile%, Keys, autoEdit
     IniWrite, %A_Space%, %settingsFile%, Keys, autoBizlist
     IniWrite, %A_Space%, %settingsFile%, Keys, EmergencyDelete
+    IniWrite, Insert, %settingsFile%, Keys, PanelHide
 
     Gosub, Hotkeys
 Return
@@ -2414,6 +2965,32 @@ Back:
     ReturnToMainMenu()
 Return
 
+HelpOpen:
+    MenuHelpOpen("")
+Return
+
+HelpBack:
+    MenuHelpBack()
+Return
+
+HelpTopic:
+    helpPickedKey := helpBtnMap[A_GuiControl]
+    if (helpPickedKey != "")
+        MenuHelpShow(helpMenu, helpPickedKey, helpReturn, false)
+Return
+
+HelpList:
+    MenuHelpShow(helpMenu, "", helpReturn, false)
+Return
+
+HelpPrev:
+    MenuHelpShow(helpMenu, MenuHelpNeighbor(helpMenu, helpKey, -1), helpReturn, helpDirect)
+Return
+
+HelpNext:
+    MenuHelpShow(helpMenu, MenuHelpNeighbor(helpMenu, helpKey, 1), helpReturn, helpDirect)
+Return
+
 ViMeLlYGuiEscape:
 Close:
     CloseMenuWindows()
@@ -2446,6 +3023,20 @@ OpenPunishHelper:
     }
 Return
 
+OpenAnswerRules:
+    if (EnsureAnswerRulesFile())
+        Run, notepad %answerRulesFile%
+    else
+        ToolTip("[𝐒𝐂𝐑𝐈𝐏𝐓] Не удалось создать answer-rules.txt.", 2500)
+Return
+
+OpenPunishWords:
+    if (EnsurePunishWordsFile())
+        Run, notepad %punishWordsFile%
+    else
+        ToolTip("[𝐒𝐂𝐑𝐈𝐏𝐓] Не удалось создать punish-words.txt.", 2500)
+Return
+
 OpenAdditionalFeatures:
     if (additionalFeaturesStatus) {
         Run, notepad %additionalFeaturesFile%
@@ -2458,14 +3049,15 @@ AutoSpMode_Cycle:
     autoSpMode := (autoSpMode >= 3) ? 1 : autoSpMode + 1
     IniWrite, %autoSpMode%, %settingsFile%, Preset, autoSpMode
     autoSpModeName := AutoSpModeName(autoSpMode)
-    GuiControl,, AutoSpModeButton, ⇄ Выбор жалобы: %autoSpModeName%
+    GuiControl,, AutoSpModeButton, ⇄ Автослежка берёт: %autoSpModeName%
+    MenuRefreshHint()
 Return
 
 AutoSpPool_Cycle:
     autoSpPool := AutoSpNextPool(autoSpPool)
     IniWrite, %autoSpPool%, %settingsFile%, Preset, autoSpPool
-    GuiControl,, AutoSpPoolButton, 🧠 Помнит: %autoSpPool%
-    GuiControl,, AutoSpHint, % AutoSpHintText()
+    GuiControl,, AutoSpPoolButton, 🧠 Видимость: %autoSpPool%
+    MenuRefreshHint()
 Return
 
 ; === AutoSpAgeSelect: выбор времени, которое скрипт помнит репорт (кнопки AutoSpAge1…AutoSpAge5 на главной) ===
@@ -2478,7 +3070,7 @@ AutoSpAgeSelect:
     IniWrite, %autoSpMaxAge%, %settingsFile%, Preset, autoSpMaxAge
     Loop, 5
         GuiControl, ViMeLlY:, AutoSpAge%A_Index%, % AutoSpAgeBtnText(A_Index)
-    GuiControl, ViMeLlY:, AutoSpHint, % AutoSpHintText()
+    MenuRefreshHint()
 Return
 
 InteractMenu:
@@ -2493,11 +3085,15 @@ InteractMenu:
     Gui, ViMeLlYInteract:Font, s14 Bold, Comic Sans MS
     Gui, ViMeLlYInteract:Add, Text, w380 Center, ViMeLlY Script
     Gui, ViMeLlYInteract:Font, s10 Bold, Comic Sans MS
-    Gui, ViMeLlYInteract:Add, Button, yp x300 gReload,⟲
+    Gui, ViMeLlYInteract:Add, Button, yp x271 gHelpOpen,❓
+    Gui, ViMeLlYInteract:Add, Button, yp x+1 gReload,⟲
     Gui, ViMeLlYInteract:Add, Button, yp x+1 gResetInteract,♻️
     Gui, ViMeLlYInteract:Add, Button, yp x+1 gBack,⮐
     Gui, ViMeLlYInteract:Add, Button, yp x+1 gClose,✘
     Gui, ViMeLlYInteract:Add, Text, y+1 xm w380 Center, ‧  ‧ ‧ ‧ ‧‧‧‧‧‧‧‧ Взаимодействие с игроком ‧‧‧‧‧‧‧‧ ‧  ‧ ‧ ‧
+    Gui, ViMeLlYInteract:Font, s8, Segoe UI
+    Gui, ViMeLlYInteract:Add, Text, x100 y+3 w110, Команда
+    Gui, ViMeLlYInteract:Add, Text, x+5 yp w175, Текст после ID
     Gui, ViMeLlYInteract:Font, s8, Cascadia Mono
     Loop, 10
     {
@@ -2513,12 +3109,10 @@ InteractMenu:
         Gui, ViMeLlYInteract:Add, Edit, x100 yp h17 Limit64 +0x200 w110 vIntCmd%iS%, %iC%
         Gui, ViMeLlYInteract:Add, Edit, x+5 yp h17 Limit128 +0x200 w175 vIntArgs%iS%, %iA%
     }
-    Gui, ViMeLlYInteract:Font, s7, Segoe UI
-    Gui, ViMeLlYInteract:Add, Text, x25 y+4 w365 Center, Слева — команда (например /mute), справа — текст после ID. Пустая команда — слот выключен.
-    Gui, ViMeLlYInteract:Add, Text, x25 y+1 w365 Center, Команду можно писать через точку в русской раскладке: .пуемур = /getveh
+    Gui, ViMeLlYInteract:Font, s8, Segoe UI
+    Gui, ViMeLlYInteract:Add, Text, x25 y+6 w380 h32 Center vMenuKeyboardSelection, Наведите курсор или выберите кнопку стрелками — здесь появится описание
     Gui, ViMeLlYInteract:Font, s7, Comic Sans MS
-    Gui, ViMeLlYInteract:Add, Text, x25 y+4 w380 h14 Center vMenuKeyboardHint, ↑ ↓ ← → / Tab — выбор • Enter — выполнить • Esc — назад/закрыть
-    Gui, ViMeLlYInteract:Add, Text, x25 y+0 w380 h14 Center vMenuKeyboardSelection, Выберите пункт стрелками или Tab
+    Gui, ViMeLlYInteract:Add, Text, x25 y+2 w380 h14 Center vMenuKeyboardHint, ↑ ↓ ← → / Tab — выбор • Enter — выполнить • F1 — справка • Esc — назад
     Gui, ViMeLlYInteract:Font, s7 Bold, Comic Sans MS
     Gui, ViMeLlYInteract:Add, Link, x45 y+5, ≣≣≣ ❤ <a href="https://t.me/+1eeJ_8vhugYyNmMy">ViMeLlY Script (%version%)</a> | Приятного пользования. ❤ ≣≣≣
     ShowMenuNoActivate("ViMeLlYInteract")
@@ -2608,7 +3202,7 @@ Return
 
 ToggleAdminStats:
     adminStatsStatus := !adminStatsStatus
-    newStatus4 := adminStatsStatus ? "✔" : "✘"
+    newStatus4 := adminStatsStatus ? "✔ Подсчёт" : "✘ Подсчёт"
     
     GuiControl,, adminStatsButton, %newStatus4%
     
@@ -2647,12 +3241,7 @@ SaveCustomDelays:
     if (currentSetup != "Настраиваемый")
         Return
     Gui, ViMeLlYSettings:Submit, NoHide
-    if (MySetup_sp != "")
-        IniWrite, %MySetup_sp%, %settingsFile%, Preset, Delay1
-    if (MySetup_d1 != "")
-        IniWrite, %MySetup_d1%, %settingsFile%, Preset, Delay2
-    if (MySetup_d2 != "")
-        IniWrite, %MySetup_d2%, %settingsFile%, Preset, Delay3
+    CustomDelaysApply(MySetup_sp, MySetup_d1, MySetup_d2)
 Return
 
 SaveHotKeys:
@@ -2671,6 +3260,7 @@ SaveHotKeys:
     hotkeys["autoEdit"] := HK_autoEdit
     hotkeys["autoBizlist"] := HK_autoBizlist
     hotkeys["EmergencyDelete"] := HK_EmergencyDelete
+    hotkeys["PanelHide"] := HK_PanelHide
 
     IniWrite, %HK_Menu%, %settingsFile%, Keys, Menu
 
@@ -2683,6 +3273,8 @@ SaveHotKeys:
         IniWrite, %HK_autoIssue%, %settingsFile%, Keys, autoIssue
         IniWrite, %HK_CopyAChat%, %settingsFile%, Keys, CopyAChat
         IniWrite, %HK_AdminStats%, %settingsFile%, Keys, AdminStats
+        IniWrite, %HK_PanelHide%, %settingsFile%, Keys, PanelHide
+        GuiControl, ViMeLlYHotKeys:, HK_PanelHideText, % (HK_PanelHide) ? "‖ " . ReadableHotkey(HK_PanelHide) : "‖ Не назначена"
         GuiControl, ViMeLlYHotKeys:, HK_WatchText, % (HK_Watch) ? "‖ " . ReadableHotkey(HK_Watch) : "‖ Не назначена"
         GuiControl, ViMeLlYHotKeys:, HK_ReplyText, % (HK_Reply) ? "‖ " . ReadableHotkey(HK_Reply) : "‖ Не назначена"
         GuiControl, ViMeLlYHotKeys:, HK_RequestText, % (HK_Request) ? "‖ " . ReadableHotkey(HK_Request) : "‖ Не назначена"
@@ -2826,27 +3418,39 @@ hintTimersOff() {
     SetTimer, respondCommand, Off
 }
 
+; spStage: 0 — слежки нет, 1 — доступно приветствие (Reply), 2 — быстрые ответы (Reply + 1…0), 3 — ответные клавиши уже отработали.
 spTimersOff() {
+    global spStage
     SetTimer, WatchKeys, Off
     SetTimer, WatchSpectate, Off
+    spStage := 3
 }
 
 WatchKeys() {
-    global repID
+    global spReplyTarget, spStage, spActiveUntil
 
+    ; Reply + Enter — ответ на подсказку нового репорта (respondComplaint), а не на жалобу, за которой следим.
+    if (spReplyTarget = "" || GetKeyState("Enter", "P"))
+        return
     if hotkeys["Reply"] != "" {
         if GetKeyState(hotkeys["Reply"], "P") {
+            ; Адресат фиксируется в момент /sp и не меняется от новых репортов.
+            target := spReplyTarget
             spTimersOff()
             SendMessage, 0x50,, 0x4190419,, A
-            sendReply(repID, getAnswer("Spectate"))
+            sendReply(target, getAnswer("Spectate"))
             SetTimer, WatchSpectate, 30
+            spStage := 2
+            spActiveUntil := A_TickCount + 600000
         }
     }
 }
 
 WatchSpectate() {
-    global repID
+    global spReplyTarget, spActiveUntil
 
+    if (spReplyTarget = "" || GetKeyState("Enter", "P"))
+        return
     if (hotkeys["Reply"] != "") {
         Loop, 10 {
             key := A_Index = 10 ? "0" : A_Index
@@ -2854,7 +3458,8 @@ WatchSpectate() {
             if GetKeyState(hotkeys["Reply"], "P") && GetKeyState(key, "P") {
                 spTimersOff()
                 SendMessage, 0x50,, 0x4190419,, A
-                sendReply(repID, getAnswer("Ans" . key))
+                sendReply(spReplyTarget, getAnswer("Ans" . key))
+                spActiveUntil := A_TickCount + 600000
                 break
             }
         }
@@ -2951,21 +3556,45 @@ InteractCommand(slot) {
     }
 }
 
+; === PanelHide: временно скрыть или показать панель репортов (до перезапуска скрипта) ===
+PanelHide:
+    if (!reportPanelEnabled || scriptMode != "Admin") {
+        ToolTip("[𝐒𝐂𝐑𝐈𝐏𝐓] Панель репортов выключена в настройках скрипта.", 1800)
+        Return
+    }
+    reportPanelHidden := !reportPanelHidden
+    if (reportPanelHidden) {
+        ReportPanelHide()
+        ToolTip("[𝐒𝐂𝐑𝐈𝐏𝐓] Панель репортов скрыта. Показать: " . ReadableHotkey(hotkeys["PanelHide"]), 1800)
+    } else {
+        ReportPanelRefresh()
+        ToolTip("[𝐒𝐂𝐑𝐈𝐏𝐓] Панель репортов показана.", 1200)
+    }
+Return
+
 Watch:
     spTimersOff()
     Sleep, 50
     autoSpectate()
 Return
 
-; === AutoSpParse: репорт из строки чатлога (разбор тот же, что и раньше) ===
+; === AutoSpParse: репорт из строки чатлога (разбор тот же, что и раньше; дополнительно — текст жалобы и порядковый номер) ===
 AutoSpParse(line) {
+    global autoSpSeq
     at := -1
     if (RegExMatch(line, "^\[(\d{2}):(\d{2}):(\d{2})\]", t))
         at := t1 * 3600 + t2 * 60 + t3
-    if (RegExMatch(line, "\[(RADMIR|HASSLE)\] (\w+_\w+)?\[(\d+)\]:.*?\b(\d{1,3})\b", m))
-        return {line: line, at: at, nick: m2, rep: m3, spec: m4, taken: false, answered: false}
-    if (RegExMatch(line, "\[(RADMIR|HASSLE)\] (\w+_\w+)?\[(\d+)\]:", m))
-        return {line: line, at: at, nick: m2, rep: m3, spec: m3, taken: false, answered: false}
+    txt := ""
+    if (RegExMatch(line, "\[(?:RADMIR|HASSLE)\] (?:\w+_\w+)?\[\d+\]:\s*(.*)$", tm))
+        txt := Trim(RegExReplace(tm1, "\{[0-9A-Fa-f]{6}\}"))
+    if (RegExMatch(line, "\[(RADMIR|HASSLE)\] (\w+_\w+)?\[(\d+)\]:.*?\b(\d{1,3})\b", m)) {
+        autoSpSeq++
+        return {line: line, at: at, nick: m2, rep: m3, spec: m4, text: txt, seq: autoSpSeq, taken: false, answered: false, answeredBy: "", answeredMe: false}
+    }
+    if (RegExMatch(line, "\[(RADMIR|HASSLE)\] (\w+_\w+)?\[(\d+)\]:", m)) {
+        autoSpSeq++
+        return {line: line, at: at, nick: m2, rep: m3, spec: m3, text: txt, seq: autoSpSeq, taken: false, answered: false, answeredBy: "", answeredMe: false}
+    }
     return ""
 }
 
@@ -3013,48 +3642,87 @@ AutoSpModeName(mode) {
 }
 
 
-; === AutoSpIsFresh: репорт не старше autoSpMaxAge секунд (по метке времени строки; без метки — считается свежим) ===
-AutoSpIsFresh(e) {
+; === AutoSpAgeSec: возраст репорта в секундах (по метке времени строки; без метки — 0) ===
+AutoSpAgeSec(e) {
     if (e.at < 0)
-        return true
+        return 0
     diff := A_Hour * 3600 + A_Min * 60 + A_Sec - e.at
     if (diff < -120)
         diff += 86400
     else if (diff < 0)
         diff := 0
-    return diff <= autoSpMaxAge
+    return diff
 }
 
 
-; === AutoSpMarkAnswered: на репорты этого игрока, пришедшие до ответа админа, ответ уже дан ===
-AutoSpMarkAnswered(nick, id) {
+; === AutoSpIsFresh: репорт не старше autoSpMaxAge секунд (без метки времени — считается свежим) ===
+AutoSpIsFresh(e) {
+    global autoSpMaxAge
+    return AutoSpAgeSec(e) <= autoSpMaxAge
+}
+
+
+; === AutoSpMarkAnswered: на репорты этого игрока, пришедшие до ответа админа, ответ уже дан (запоминаем, кто ответил) ===
+AutoSpMarkAnswered(nick, id, admin := "", myName := "") {
+    global autoSpReports
+    mine := (admin != "" && myName != "" && admin = myName)
     for _, e in autoSpReports {
         if (e.answered)
             continue
-        if ((e.nick != "" && e.nick = nick) || (e.nick = "" && e.rep = id))
+        if ((e.nick != "" && e.nick = nick) || (e.nick = "" && e.rep = id)) {
             e.answered := true
+            e.answeredBy := admin
+            e.answeredMe := mine
+        }
     }
 }
 
 
-; === AutoSpPickReport: выбор репорта по режиму autoSpMode (1 — последний, 2 — случайный, 3 — самый старый). В режимах 2 и 3 — только свежие (autoSpMaxAge) ===
-; Чатлог читается только дочитыванием новых строк. В режимах 2 и 3 пропускаются репорты, за которыми уже заходили, и те, на которые уже ответил любой администратор.
-AutoSpPickReport() {
+; === AutoSpIngest: дочитывает новые строки чатлога: новые репорты и ответы администраторов ===
+; Вызывается и при выборе репорта (Watch), и фоновым таймером панели репортов; состояние общее.
+AutoSpIngest() {
+    global autoSpSeeded, autoSpReports, userNickname
+    wasCrit := A_IsCritical
+    Critical, On
     if (!autoSpSeeded) {
         ChatlogReadNew("autosp_list", "all")
         autoSpSeeded := true
     }
+    myName := Base64Decode(userNickname)
     for _, line in ChatlogReadNew("autosp_list") {
         if (InStr(line, "{FFCD00}")) {
             entry := AutoSpParse(line)
             if (IsObject(entry))
                 autoSpReports.Push(entry)
-        } else if (RegExMatch(line, "(?:Администратор|Агент поддержки) \w+(?:_\w+)*(?:\[\d+\])? для (\w+(?:_\w+)*)\[(\d+)\]:", ans)) {
-            AutoSpMarkAnswered(ans1, ans2)
+        } else if (RegExMatch(line, "(?:Администратор|Агент поддержки) (\w+(?:_\w+)*)(?:\[\d+\])? для (\w+(?:_\w+)*)\[(\d+)\]:", ans)) {
+            AutoSpMarkAnswered(ans2, ans3, ans1, myName)
         }
     }
     while (autoSpReports.Length() > 60)
         autoSpReports.RemoveAt(1)
+    Critical, % wasCrit ? "On" : "Off"
+}
+
+
+; === AutoSpCandidates: кандидаты для режимов 2 и 3 (окно autoSpPool последних; свежие, без ответа, не взятые), от новых к старым ===
+AutoSpCandidates() {
+    global autoSpReports, autoSpPool
+    cand := []
+    count := autoSpReports.Length()
+    Loop, % (count < autoSpPool ? count : autoSpPool)
+    {
+        entry := autoSpReports[count - A_Index + 1]
+        if (!entry.taken && !entry.answered && AutoSpIsFresh(entry))
+            cand.Push(entry)
+    }
+    return cand
+}
+
+
+; === AutoSpPickReport: выбор репорта по режиму autoSpMode (1 — последний, 2 — случайный, 3 — самый старый). В режимах 2 и 3 — только свежие (autoSpMaxAge) ===
+; В режимах 2 и 3 пропускаются репорты, за которыми уже заходили, и те, на которые уже ответил любой администратор.
+AutoSpPickReport() {
+    AutoSpIngest()
 
     count := autoSpReports.Length()
     if (count = 0) {
@@ -3063,13 +3731,7 @@ AutoSpPickReport() {
     }
 
     if (autoSpMode = 2 || autoSpMode = 3) {
-        cand := []
-        Loop, % (count < autoSpPool ? count : autoSpPool)
-        {
-            entry := autoSpReports[count - A_Index + 1]
-            if (!entry.taken && !entry.answered && AutoSpIsFresh(entry))
-                cand.Push(entry)
-        }
+        cand := AutoSpCandidates()
         if (cand.Length() = 0) {
             ToolTip("[𝐒𝐂𝐑𝐈𝐏𝐓] ℹ️ Новых репортов нет (свежие, без ответа и не взятые, за " . AutoSpAgeText(autoSpMaxAge) . ").", 1500)
             return ""
@@ -3085,6 +3747,413 @@ AutoSpPickReport() {
     }
     pick.taken := true
     return pick
+}
+
+
+; ====================================================================================================================
+; ПАНЕЛЬ РЕПОРТОВ: плашка-меню в реальном времени (включается в настройках скрипта)
+; ====================================================================================================================
+; Показывает до 10 последних репортов: сверху те, что можно взять через Watch (окно autoSpPool), ниже история: в работе (вы наблюдаете) / ответил другой админ / ответили вы.
+; ▶ — репорт, который возьмёт кнопка Watch в текущем режиме; ◇ — репорты, из которых режим выбирает случайно.
+; Панель видна только когда активно окно игры, не перехватывает клики и стоит с противоположной от плашек-уведомлений стороны.
+
+ReportPanelBtnText() {
+    global reportPanelEnabled
+    return "📋 Панель репортов: " . (reportPanelEnabled ? "✔ Включена" : "✘ Выключена")
+}
+
+
+; === ReportPanelApply: запускает или останавливает фоновое обновление панели по настройке ===
+ReportPanelApply() {
+    global reportPanelEnabled, scriptMode
+    if (reportPanelEnabled && scriptMode = "Admin") {
+        SetTimer, ReportPanelTick, 500
+    } else {
+        SetTimer, ReportPanelTick, Off
+        ReportPanelHide()
+    }
+}
+
+
+ReportPanelHide() {
+    global reportPanelSig, reportPanelRows
+    Gui, 41:Destroy
+    Gui, 42:Destroy
+    reportPanelSig := ""
+    reportPanelRows := []
+}
+
+
+; === ReportPanelTick: разбор новых строк чатлога и обновление панели ===
+ReportPanelTick() {
+    global reportPanelEnabled, scriptMode
+    if (!reportPanelEnabled || scriptMode != "Admin") {
+        ReportPanelHide()
+        return
+    }
+    AutoSpIngest()
+    ReportPanelRefresh()
+}
+
+
+ReportPanelAgeText(age) {
+    if (age < 60)
+        return age . "с"
+    sec := Mod(age, 60)
+    return (age // 60) . "м " . (sec < 10 ? "0" : "") . sec . "с"
+}
+
+
+; === ReportPanelRows: до 10 последних репортов; сначала те, на которые можно ответить через Watch, затем история ===
+; «Можно ответить» ставится только если Watch реально может взять репорт в текущем режиме:
+;   режим 1 (последняя) — только самый новый репорт; режимы 2 и 3 — свежие, без ответа и не взятые из окна autoSpPool.
+; Всё остальное (ответили, взяты, устарели, вне окна, недоступны Watch) — история.
+ReportPanelRows() {
+    global autoSpReports, autoSpMode, autoSpMaxAge, autoSpPool, spActiveSeq
+    list := []
+    actv := []
+    rest := []
+    count := autoSpReports.Length()
+    if (count = 0)
+        return list
+    pickSeq := 0
+    inPool := {}
+    if (autoSpMode = 1) {
+        pickSeq := autoSpReports[count].seq
+    } else {
+        cands := AutoSpCandidates()
+        for _, c in cands
+            inPool[c.seq] := true
+        if (autoSpMode = 3 && cands.Length())
+            pickSeq := cands[cands.Length()].seq
+    }
+    shown := (count < 10) ? count : 10
+    Loop, %shown%
+    {
+        pos := A_Index
+        e := autoSpReports[count - pos + 1]
+        age := AutoSpAgeSec(e)
+        if (e.answered && e.answeredMe) {
+            key := "me"
+            label := "✔ Обработан"
+            color := "2ECC71"
+        } else if (e.answered) {
+            key := "other"
+            label := "✎ " . (e.answeredBy != "" ? SubStr(e.answeredBy, 1, 20) : "админ")
+            color := "FF9F43"
+        } else if (e.seq = spActiveSeq && SpIsActive()) {
+            key := "active"
+            label := "♯ Обрабатывается"
+            color := "4C8DFF"
+        } else if (e.skip = "offline") {
+            key := "gone"
+            label := "✘ Игрок вышел"
+            color := "7C8594"
+        } else if (e.skip = "busy") {
+            key := "busy"
+            label := "✘ Следит другой"
+            color := "7C8594"
+        } else if (e.taken) {
+            key := "skipped"
+            label := "↷ Пропущен"
+            color := "9AA3B2"
+        } else if (autoSpMode = 1) {
+            if (e.seq = pickSeq) {
+                key := "free"
+                label := "✉︎ Ожидает ответа"
+                color := "2ECC71"
+            } else {
+                key := "manual"
+                label := "✘ Вручную"
+                color := "7C8594"
+            }
+        } else if (inPool.HasKey(e.seq)) {
+            key := "free"
+            label := "✉︎ Ожидает ответа"
+            color := "2ECC71"
+        } else if (pos <= autoSpPool) {
+            key := "stale"
+            label := "☣ Устарел"
+            color := "7C8594"
+        } else {
+            key := "out"
+            label := "✘ Вне окна"
+            color := "7C8594"
+        }
+        mark := (e.seq = pickSeq) ? "▶" : (inPool.HasKey(e.seq) ? "◇" : "")
+        title := (e.nick != "" ? e.nick : "ID") . "[" . e.rep . "]"
+        snippet := RegExReplace(e.text, "\s+", " ")
+        if (snippet = "")
+            snippet := "(без текста)"
+        if (StrLen(snippet) > 40)
+            snippet := SubStr(snippet, 1, 40) . "…"
+        snippet := RegExReplace(snippet, "&", "&&")
+        row := {seq: e.seq, key: key, label: label, color: color, mark: mark, title: title, snippet: snippet, ageText: ReportPanelAgeText(age), hist: (key != "free" && key != "active")}
+        if (key = "active")
+            actv.Push(row)
+        else if (key = "free")
+            list.Push(row)
+        else
+            rest.Push(row)
+    }
+    ; Порядок: текущая слежка, затем то, что можно взять, затем история.
+    out := []
+    for _, r in actv
+        out.Push(r)
+    for _, r in list
+        out.Push(r)
+    for _, r in rest
+        out.Push(r)
+    return out
+}
+
+
+; === SpIsActive: идёт ли слежка по репорту (статус «обрабатывается» снимается через 10 минут без действий) ===
+SpIsActive() {
+    global spActiveSeq, spActiveUntil
+    return (spActiveSeq != 0 && A_TickCount < spActiveUntil)
+}
+
+
+; === ReportPanelActions: что можно нажать прямо сейчас (клавиши из настроек; неназначенные не показываются) ===
+ReportPanelActions() {
+    global hotkeys, spStage, spTargetTitle, spSpecID, ntfHint
+    acts := []
+    reply := hotkeys["Reply"]
+    if (reply != "" && IsObject(ntfHint)) {
+        kind := ntfHint.kind
+        if (kind = "Вопрос")
+            hd := "Ответить на вопрос игроку с ID "
+        else if (kind = "Оффлайн")
+            hd := "Ответить: игрок вышел"
+        else
+            hd := "Выдать наказание"
+        acts.Push({k: ReadableHotkey(reply) . " + Enter", d: hd . ntfHint.target, c: "FFCD00"})
+    }
+    if (SpIsActive()) {
+        if (reply != "" && spStage = 1)
+            acts.Push({k: ReadableHotkey(reply), d: "Приветствие — " . spTargetTitle, c: "2ECC71"})
+        else if (reply != "" && spStage = 2)
+            acts.Push({k: ReadableHotkey(reply) . " + 1…0", d: "Быстрый ответ — " . spTargetTitle, c: "2ECC71"})
+        ik := hotkeys["Interact"]
+        if (ik != "" && ik != reply)
+            acts.Push({k: ReadableHotkey(ik) . " + 1…0", d: "Взаим. c " . spTargetTitle . "[" . spSpecID . "]", c: "4C8DFF"})
+        hr := hotkeys["humanReply"]
+        if (hr != "")
+            acts.Push({k: ReadableHotkey(hr), d: "Ручной ответ — " . spTargetTitle . "[" . spSpecID . "]", c: "EDEFF2"})
+    }
+    wk := hotkeys["Watch"]
+    if (wk != "")
+        acts.Push({k: ReadableHotkey(wk), d: "Зайти в слежку", c: "EDEFF2"})
+    ph := hotkeys["PanelHide"]
+    if (ph != "")
+        acts.Push({k: ReadableHotkey(ph), d: "Скрыть панель", c: "8E97A6"})
+    for _, a in acts {
+        if (StrLen(a.d) > 34)
+            a.d := SubStr(a.d, 1, 33) . "…"
+    }
+    return acts
+}
+
+
+; === ReportPanelRefresh: показывает панель, пересобирает при изменении состава/статусов, иначе обновляет только возраст ===
+ReportPanelRefresh() {
+    global reportPanelNum, reportPanelSig, reportPanelRows, reportPanelAgeHwnds, autoSpMode, autoSpPool, autoSpMaxAge, ntfCorner, reportPanelHidden
+    if (reportPanelHidden) {
+        if (reportPanelSig != "")
+            ReportPanelHide()
+        return
+    }
+    if (!WinActive("ahk_exe gta_sa.exe")) {
+        if (reportPanelSig != "")
+            ReportPanelHide()
+        return
+    }
+    rows := ReportPanelRows()
+    sig := autoSpMode . "|" . autoSpPool . "|" . autoSpMaxAge . "|" . ntfCorner . "|"
+    for _, r in rows
+        sig .= r.seq . r.key . r.mark . r.label . ";"
+    acts := ReportPanelActions()
+    for _, a in acts
+        sig .= "|" . a.k . a.d
+    if (sig = reportPanelSig) {
+        for i, r in rows {
+            if (r.ageText != reportPanelRows[i].ageText)
+                DllCall("SetWindowText", "Ptr", reportPanelAgeHwnds[i], "Str", r.ageText)
+        }
+        reportPanelRows := rows
+        return
+    }
+    ReportPanelBuild(rows, sig, acts)
+}
+
+
+; === ReportPanelBuild: строит новую плашку в соседнем окне (41/42) и только потом убирает старую — без мерцания ===
+; Вид: заголовок и режим, окно выборки, цветные счётчики. Блок «МОЖНО ОТВЕТИТЬ» — карточки в две строки (ник и статус,
+; текст жалобы и возраст) с цветной полоской. Блок «ИСТОРИЯ» — компактные приглушённые строки (ник, кто ответил, возраст).
+ReportPanelBuild(rows, sig, acts) {
+    global reportPanelNum, reportPanelSig, reportPanelRows, reportPanelAgeHwnds, autoSpMode, autoSpPool, autoSpMaxAge, ntfCorner
+    DetectHiddenWindows, On
+    oldNum := reportPanelNum
+    num := (oldNum = 41) ? 42 : 41
+    w := 380
+    cw := w - 32
+    freeN := 0
+    takenN := 0
+    otherN := 0
+    histN := 0
+    topN := 0
+    for _, r in rows {
+        if (r.key = "free")
+            freeN++
+        else if (r.key = "active")
+            takenN++
+        else if (r.key = "other")
+            otherN++
+        if (r.hist)
+            histN++
+        else
+            topN++
+    }
+    modeTxt := "Режим: " . AutoSpModeName(autoSpMode)
+    memTxt := "Область видимости: " . autoSpPool . " rep  ·  Область досягаемости: " . AutoSpAgeText(autoSpMaxAge)
+    freeTxt := "● Доступно: " . freeN
+    takenTxt := "● В работе: " . takenN
+    otherTxt := "● Не отвечено: " . otherN
+
+    Gui, %num%:Destroy
+    Gui, %num%:New, +AlwaysOnTop -Caption +ToolWindow +E0x08000020 +HwndhRP
+    Gui, %num%:Margin, 0, 0
+    Gui, %num%:Color, 15181E
+    Gui, %num%:Font, s11 Bold cEDEFF2, Segoe UI
+    Gui, %num%:Add, Text, x16 y10 w150, Репорты
+    Gui, %num%:Font, s8 Bold c4C8DFF, Segoe UI
+    Gui, %num%:Add, Text, x166 yp+5 w198 Right, %modeTxt%
+    Gui, %num%:Font, s8 Norm c8E97A6, Segoe UI
+    Gui, %num%:Add, Text, x16 y+5 w%cw%, %memTxt%
+    Gui, %num%:Font, s8 Bold c2ECC71, Segoe UI
+    Gui, %num%:Add, Text, x16 y+8 w100, %freeTxt%
+    Gui, %num%:Font, s8 Bold c4C8DFF, Segoe UI
+    Gui, %num%:Add, Text, x+0 yp w100, %takenTxt%
+    Gui, %num%:Font, s8 Bold cFF9F43, Segoe UI
+    Gui, %num%:Add, Text, x+0 yp w148, %otherTxt%
+    Gui, %num%:Add, Progress, x16 y+8 w%cw% h1 -Theme Background2A2F38 c2A2F38, 100
+
+    ages := []
+    rowTop := []
+    rowBot := []
+    if (rows.Length() = 0) {
+        Gui, %num%:Font, s9 Norm cEDEFF2, Segoe UI
+        Gui, %num%:Add, Text, x16 y+14 w%cw% Center, Репортов пока нет
+        Gui, %num%:Font, s8 Norm c8E97A6, Segoe UI
+        Gui, %num%:Add, Text, x16 y+2 w%cw% Center, Новые появятся здесь автоматически
+    } else {
+        ; --- Блок «МОЖНО ОТВЕТИТЬ» ---
+        Gui, %num%:Font, s7 Bold c2ECC71, Segoe UI
+        Gui, %num%:Add, Text, x16 y+10 w%cw%, МОЖНО ОТВЕТИТЬ
+        if (topN = 0) {
+            Gui, %num%:Font, s8 Norm c8E97A6, Segoe UI
+            Gui, %num%:Add, Text, x24 y+6 w340, Сейчас нет репортов, на которые можно ответить
+        }
+        for i, r in rows {
+            if (r.hist)
+                continue
+            col := r.color
+            markCol := (r.mark = "▶") ? "FFCD00" : "8E97A6"
+            markTxt := r.mark
+            titleTxt := r.title
+            statusTxt := r.label
+            snipTxt := r.snippet
+            ageTxt := r.ageText
+            Gui, %num%:Font, s9 Bold c%markCol%, Segoe UI
+            Gui, %num%:Add, Text, x24 y+8 w14 +HwndhTop, %markTxt%
+            Gui, %num%:Font, s9 Bold cFFFFFF, Segoe UI
+            Gui, %num%:Add, Text, x40 yp w156, %titleTxt%
+            Gui, %num%:Font, s8 Bold c%col%, Segoe UI
+            Gui, %num%:Add, Text, x198 yp+1 w166 Right, %statusTxt%
+            Gui, %num%:Font, s8 Norm cB4BBC8, Segoe UI
+            Gui, %num%:Add, Text, x40 y+4 w250 +HwndhBot, %snipTxt%
+            Gui, %num%:Font, s8 Norm c8E97A6, Segoe UI
+            Gui, %num%:Add, Text, x294 yp w70 Right +HwndhAge, %ageTxt%
+            ages[i] := hAge
+            rowTop[i] := hTop
+            rowBot[i] := hBot
+        }
+        ; --- Блок «ИСТОРИЯ» ---
+        if (histN > 0) {
+            Gui, %num%:Font, s7 Bold c6B7483, Segoe UI
+            Gui, %num%:Add, Text, x16 y+14 w%cw%, ИСТОРИЯ
+            for i, r in rows {
+                if (!r.hist)
+                    continue
+                col := r.color
+                titleTxt := r.title
+                statusTxt := r.label
+                ageTxt := r.ageText
+                Gui, %num%:Font, s9 Norm c9AA3B2, Segoe UI
+                Gui, %num%:Add, Text, x24 y+6 w150 +HwndhTop, %titleTxt%
+                Gui, %num%:Font, s8 Bold c%col%, Segoe UI
+                Gui, %num%:Add, Text, x176 yp+1 w132 Right, %statusTxt%
+                Gui, %num%:Font, s8 Norm c6B7483, Segoe UI
+                Gui, %num%:Add, Text, x312 yp w52 Right +HwndhAge, %ageTxt%
+                ages[i] := hAge
+                rowTop[i] := hTop
+                rowBot[i] := hTop
+            }
+        }
+    }
+    ; --- Блок «ДЕЙСТВИЯ»: какие клавиши работают прямо сейчас ---
+    if (acts.Length() > 0) {
+        Gui, %num%:Add, Progress, x16 y+12 w%cw% h1 -Theme Background2A2F38 c2A2F38, 100
+        Gui, %num%:Font, s7 Bold c6B7483, Segoe UI
+        Gui, %num%:Add, Text, x16 y+6 w%cw%, ДЕЙСТВИЯ
+        for _, a in acts {
+            keyTxt := RegExReplace(a.k, "&", "&&")
+            descTxt := RegExReplace(a.d, "&", "&&")
+            keyCol := a.c
+            Gui, %num%:Font, s8 Bold c%keyCol%, Segoe UI
+            Gui, %num%:Add, Text, x16 y+4 w126, %keyTxt%
+            Gui, %num%:Font, s8 Norm cB4BBC8, Segoe UI
+            Gui, %num%:Add, Text, x144 yp w220, %descTxt%
+        }
+    }
+    Gui, %num%:Add, Text, x0 y+12 w1 h1
+    Gui, %num%:Show, NA AutoSize Hide
+    WinGetPos,,, gw, gh, ahk_id %hRP%
+    if (gh < 60)
+        gh := 60
+
+    ; Цветные полоски статуса слева от каждой строки (по границам её текста).
+    for i, r in rows {
+        hT := rowTop[i]
+        hB := rowBot[i]
+        if (!hT || !hB)
+            continue
+        ControlGetPos,, ty,, th, , ahk_id %hT%
+        ControlGetPos,, by,, bh, , ahk_id %hB%
+        sh := (by + bh) - ty
+        if (sh < 8)
+            continue
+        col := r.color
+        Gui, %num%:Add, Progress, x16 y%ty% w3 h%sh% -Theme Background%col% c%col%, 100
+    }
+
+    NtfAnchor(ax, ay, aw, ah)
+    ; Уведомления слева (углы 1, 3, 4) — панель справа по центру; уведомления справа (2, 5) — панель слева по центру.
+    toRight := (ntfCorner = 1 || ntfCorner = 3 || ntfCorner = 4)
+    x := toRight ? ax + aw - w - 16 : ax + 16
+    y := ay + (ah - gh) // 2
+    if (y < ay + 8)
+        y := ay + 8
+    Gui, %num%:Show, NA x%x% y%y% w%w% h%gh%
+    WinSet, Region, 0-0 W%w% H%gh% R12-12, ahk_id %hRP%
+    WinSet, Transparent, 238, ahk_id %hRP%
+    Gui, %oldNum%:Destroy
+
+    reportPanelNum := num
+    reportPanelSig := sig
+    reportPanelRows := rows
+    reportPanelAgeHwnds := ages
 }
 
 
@@ -3126,6 +4195,9 @@ OfflineReplyWatch() {
 
 
 autoSpectate() {
+    ; Без global присваивание создавало бы локальные копии, и таймеры ответа/взаимодействия не видели бы нужный ID.
+    global repID, spReplyTarget, interactID, requestCanRecall
+    global spActiveSeq, spActiveUntil, spStage, spTargetTitle, spSpecID
     if (IsObject(ntfHint) && ntfHint.kind = "Оффлайн")
         HintClose()
     rep := AutoSpPickReport()
@@ -3166,6 +4238,7 @@ autoSpectate() {
     for _, line in ChatlogReadNew("autosp") {
         if InStr(line, "Такого игрока нет") {
             foundAdmin := true
+            rep.skip := "offline"
             OfflinePrompt(rep)
             break
         } if RegExMatch(line, "\* За этим игроком уже следит администратор (\w+_\w+)\[\d+\]", match) {
@@ -3176,7 +4249,18 @@ autoSpectate() {
             foundAdmin := (match1 != Base64Decode(userNickname))
             break
         }
-    } if (!foundAdmin) {
+    }
+    if (foundAdmin && rep.skip = "")
+        rep.skip := "busy"
+    if (!foundAdmin) {
+        ; Слежка началась: адресат ответа и статус «обрабатывается» переходят на этот репорт, предыдущий становится «пропущенным».
+        spReplyTarget := rep.rep
+        spActiveSeq := rep.seq
+        spActiveUntil := A_TickCount + 600000
+        spStage := 1
+        spTargetTitle := (rep.nick != "" ? rep.nick : "ID") . "[" . rep.rep . "]"
+        spSpecID := specID
+        rep.skip := ""
         SetTimer, WatchKeys, 30
         interactID := specID
         SetTimer, WatchInteract, 30
@@ -3266,7 +4350,7 @@ Request:
         lastRequest := idRead.id
         ChatIsOpen := false
         requestBusy := false
-        ToolTip("[REQUEST] ID запроса записан: " . lastRequest . ". Следующее нажатие отправит /z " . lastRequest . ". Shift + клавиша — ввести заново.", 4000)
+        ToolTip("[REQUEST] ID запроса записан: №" . lastRequest . ". Следующее нажатие отправит /z " . lastRequest . ". Shift + клавиша — ввести заново.", 4000)
         Return
     }
 
@@ -3330,7 +4414,7 @@ Request:
     requestCanRecall := true
     ; Если такого обращения не существует, счётчик не двигаем: следующее нажатие отправит тот же ID.
     if (RequestRejected())
-        ToolTip("[REQUEST] Обращение " . nextRequest . " не существует. Счётчик не изменён.", 2500)
+        ToolTip("[REQUEST] Обращение №" . nextRequest . " не существует.", 2500)
     else
         lastRequest := nextRequest + 1
     ChatIsOpen := false
@@ -3441,6 +4525,8 @@ CopyAChat:
     }
 
     if (lastLine != "") {
+        ; Скопированную команду пользователь отправит сам: после неё повтор /z через ↑ запрещён.
+        requestCanRecall := false
         SendInput, {F6}%lastLine%
     }
 Return
@@ -3493,6 +4579,7 @@ AnswerPrepare(text) {
 ; === AnswerMatch: насколько ключ подходит тексту (0 — не подходит; больше — точнее) ===
 ; Ключ — слова через пробел, все должны встретиться. Слово ключа — начало слова в тексте («акс» не найдёт «Максим»).
 ; Слово с * в начале («*чин») ищется внутри слова. Счёт: число слов ключа и их длина — точные правила побеждают общие.
+; Слово с ! в начале («!родн», «!*родн») — исключение: если оно есть в тексте, ключ не подходит. В счёт исключения не входят.
 AnswerMatch(key, prep) {
     score := 0
     Loop, Parse, key, %A_Space%
@@ -3502,6 +4589,9 @@ AnswerMatch(key, prep) {
             continue
         StringLower, part, part
         part := StrReplace(part, "ё", "е")
+        negate := (SubStr(part, 1, 1) = "!")
+        if (negate)
+            part := SubStr(part, 2)
         loose := (SubStr(part, 1, 1) = "*")
         if (loose)
             part := SubStr(part, 2)
@@ -3519,6 +4609,11 @@ AnswerMatch(key, prep) {
                 }
             }
         }
+        if (negate) {
+            if (found)
+                return 0
+            continue
+        }
         if (!found)
             return 0
         score += 100 + StrLen(part)
@@ -3532,17 +4627,13 @@ answerLogger() {
     global answerComplaint, answerCommand
     global adminName, targetID, targetPunish
     global answerSeen, answerSeenOrder
-    static badWords := ""
-    static badExpressions := ""
+    global punishWordsLoaded, punishWordsFile, punishWordsMTime
     if (!reportLog)
         return
-    if (!IsObject(badWords)) {
-        ; Корни мата ищутся внутри слов. В выражениях слова — начало слова, * — внутри слова.
-        badWords := ["блят","сук","ебат","ебал","ебла","хуй","пизд","пидо","бляд","долб","заеб","неху","схуя","наеб","ахуе","охуе","поху","хуе"]
-        badExpressions := ["даун","пидор","пидар","шлюх","*ебла","*ебал","кончен","рот *ебал","*ебан","нищи","пош нах","лох","дебил","дура"]
-    }
     if (!answerRulesLoaded)
         LoadAnswerRules()
+    if (!punishWordsLoaded)
+        LoadPunishWords()
     targetPunish := ""
     for _, line in ChatlogReadNew("reports") {
         if RegExMatch(line, "\[(RADMIR|HASSLE)\] (\w+_\w+)?\[(\d+)\]: (.+)", match) {
@@ -3568,6 +4659,9 @@ answerLogger() {
             FileGetTime, rulesTime, %answerRulesFile%, M
             if (rulesTime != answerRulesMTime)
                 LoadAnswerRules()
+            FileGetTime, wordsTime, %punishWordsFile%, M
+            if (wordsTime != punishWordsMTime)
+                LoadPunishWords()
 
             IniRead, kR, %settingsFile%, Keys, Reply
             prep := AnswerPrepare(match4)
@@ -3584,22 +4678,10 @@ answerLogger() {
             if (bestScore > 0 && IsGTAOpen())
                 ShowTip(repAuthor, repId, Reports, kR, "Вопрос", bestReply, bestKey)
 
-            isHandled := false
-            for _, expr in badExpressions {
-                if (AnswerMatch(expr, prep) > 0 && IsGTAOpen()) {
-                    isHandled := true
-                    ShowTip(repAuthor, repId, Reports, kR, "ОСК", "360 Оскорбление администрации.")
-                    break
-                }
-            }
-            if (!isHandled) {
-                for _, word in badWords {
-                    if (InStr(prep.flat, word) && IsGTAOpen()) {
-                        ShowTip(repAuthor, repId, Reports, kR, "МАТ", "120 Мат в /report.")
-                        break
-                    }
-                }
-            }
+            ; МАТ и ОСК: слова и наказания берутся из punish-words.txt (ОСК проверяется раньше МАТ).
+            hit := PunishWordsMatch(prep)
+            if (IsObject(hit) && IsGTAOpen())
+                ShowTip(repAuthor, repId, Reports, kR, hit.kind, hit.punish)
         }
     }
 }
@@ -3625,7 +4707,7 @@ respondComplaint() {
 }
 
 respondCommand() {
-    global hotkeys, isHumanInput
+    global hotkeys, isHumanInput, requestCanRecall
     global CMDDelay, InputDelay1, InputDelay2
     if (hotkeys["Reply"] = "")
         return
@@ -3635,13 +4717,17 @@ respondCommand() {
     }
     if (GetKeyState(hotkeys["Reply"], "P") && GetKeyState("Enter", "P")) {
         target := ntfHint.target
-        cmdText := ntfHint.replyText
+        parts := PunishSplitCommand(ntfHint.replyText)
+        cmdName := parts.cmd
+        cmdArgs := SendEsc(parts.args)
         HintClose(false)
         Sleep, 100
         SendMessage, 0x50,, 0x4190419,, A
+        ; Наказание уходит в историю чата: автозапрос не должен вызывать его стрелкой ↑ вместо своего /z.
+        requestCanRecall := false
         if (isHumanInput) {
-            l := StrLen(cmdText) + 1
-            SendInput, {F6}/rmute  %cmdText%{left %l%}
+            l := StrLen(parts.args) + 1
+            SendInput, {F6}%cmdName%  %cmdArgs%{left %l%}
             Sleep, %CMDDelay%
             Loop, Parse, target
             {
@@ -3653,7 +4739,7 @@ respondCommand() {
             Sleep, 50
             SendInput, {Enter up}
         } else {
-            SendInput, {F6}/rmute %target% %cmdText%{Enter}
+            SendInput, {F6}%cmdName% %target% %cmdArgs%{Enter}
         }
         ToolTip("[𝐏𝐔𝐍𝐈𝐒𝐇𝐌𝐄𝐍𝐓] Игрок был наказан.", 3300)
         HintPump()
@@ -3669,82 +4755,9 @@ DefaultAnswerRulesText() {
     rules .= "# Слово ключа — начало слова в репорте (акс найдёт «аксессуары», но не «Максим»). *слово — искать внутри слова.`r`n"
     rules .= "# Ключ из нескольких слов: все слова должны встретиться. Побеждает самое точное правило. Файл можно править на лету.`r`n"
     rules .= "# Один ответ на несколько ключей: ключ1 | ключ2 | ключ3 = ответ. Общая часть: акс {дом|биз} = ответ (это акс дом и акс биз).`r`n"
-    rules .= "свалк = Свалка: 7:00, 11:00, 14:00, 19:00, 23:00.`r`n"
-    rules .= "конт = Контейнеры: 8:00, 12:00, 16:00, 20:00, 00:00.`r`n"
-    rules .= "адвокат = Список адвокатов -> /adlist. Гражданское лицо: 15.000, гос.организации: 20.000, ОПГ/Банды: 30.000 р. (КПЗ), ФСИН: 30.000.`r`n"
-    rules .= "лиц = В Правительстве(/liclist). Права: 10.000; проф.права: 40.000; рыбалка: 40.000; охота: 65.000; оружие: 85.000 руб.`r`n"
-    rules .= "мед = Мед.карту можно получить в больнице г.Арзамас. Чтобы проверить медиков в сети, используйте: /medlist.`r`n"
-    rules .= "номер = Снять номер: /take_number. Поставить: I - Использовать.`r`n"
-    rules .= "чат = /pagesize - строки, /fontsize - шрифт, /timestamp - время.`r`n"
-    rules .= "чат банд = Чат банды/семьи: /nfm - RP(IC), /fm - NRP(OOC).`r`n"
-    rules .= "гараж = Гаражные места по классам: Низкий - 1; Средний - 5; Высокий - до 17 мест.`r`n"
-    rules .= "киоск = Вернуть предметы: /return_items.`r`n"
-    rules .= "работ увол = Уволиться: /myjobs, /leave.`r`n"
-    rules .= "увол | увал = Уволить игрока в онлайне - /unvinvite. | В оффлайне - /uninviteoff.`r`n"
-    rules .= "выйти семь = Покинуть семью: /family_leave.`r`n"
-    rules .= "выйти банд = Покинуть банду: /family_leave.`r`n"
-    rules .= "снять наручн = Снять наручники: /uncuff.`r`n"
-    rules .= "розыск = Выдать игроку розыск: /su.`r`n"
-    rules .= "наручн = Надеть наручники: /cuff.`r`n"
-    rules .= "чин | чен | почин | почен = Не чиним автомобили. Вызывайте механиков(/c 090), либо используйте рем.комплект.`r`n"
-    rules .= "пневм = Управлять пневмоподвеской: /spanel.`r`n"
-    rules .= "гидр = Включить/Выключить гидравлику: Кнопка H.`r`n"
-    rules .= "ключ = Передать ключи от машины: /allow.`r`n"
-    rules .= "аук = Аукцион идет 24ч с момента появления слота.`r`n"
-    rules .= "слет = Слет каждый час, с 8:00 до 23:00. Кроме отелей.`r`n"
-    rules .= "букс | подцеп = Починить авто: /repair | Предложить буксировку на СТО: /tow | Подцепить машину: /at.`r`n"
-    rules .= "посмотреть мед = Посмотреть свою мед.карту: /showmc.`r`n"
-    rules .= "продать {кв|дом} = Продать квартиру/дом игроку: /sellmyhome | Государству: /sellhome.`r`n"
-    rules .= "продать огород = Продать огород игроку: /sellmygarden | Государству: /sellgarden.`r`n"
-    rules .= "продать киоск = Продать киоск игроку: /sellmystall | Государству: /sellstall.`r`n"
-    rules .= "стил бо = Изменить стиль боя: /set_style`r`n"
-    rules .= "отм заказ = Отменить заказ механика: /to | Такси: /phone - Приложение такси.`r`n"
-    rules .= "отм вызов = Отменить вызов: /to.`r`n"
-    rules .= "приглас | приглос | инвайт | принять = Пригласить игрока в семью/банду/фракцию: /invite.`r`n"
-    rules .= "выкин авто = Выкинуть игрока из своего авто: /eject | Выкинуть из авто(МВД, ФСБ): /ejectout.`r`n"
-    rules .= "спавн = Изменить место появления при заходе в игру: /setspawn.`r`n"
-    rules .= "спавн банд = Изменить место появления для банды: /gang_spawn.`r`n"
-    rules .= "авто банд = Добавить авто в банду: /gang_car.`r`n"
-    rules .= "уволить = Уволить игрока из фракции/банды/семьи: /uninvite.`r`n"
-    rules .= "ранг {банд|семь} = Изменить игроку ранг в банде/семье: /frank.`r`n"
-    rules .= "ранг = Изменить ранг игроку во фракции: /rang.`r`n"
-    rules .= "выда мед = Выдать мед.карту игроку: /medcard.`r`n"
-    rules .= "раци = Рация организации/ТК: /r - RP(IC) | /rr - NRP(OOC).`r`n"
-    rules .= "заказы дальноб = Посмотреть активные заказы на работе дальнобойщика: /bizlist - продукты | /fuellist - топливо.`r`n"
-    rules .= "обмен = Чтобы провести обмен с игроком, нажмите: R - Персонаж - Обмен предметами.`r`n"
-    rules .= "обмен нотар = Провести обмен в нотариальном агенстве: /exchange.`r`n"
-    rules .= "багаж = Открыть багажник на личном авто: /trunk.`r`n"
-    rules .= "паспорт = Показать свой паспорт: /pass.`r`n"
-    rules .= "вб | воен билет = Посмотреть военный билет: /pass.`r`n"
-    rules .= "тест = Предложить тест-драйв игроку: /cm_test_drive.`r`n"
-    rules .= "шины = Поменять шины на авто: /replace_tire.`r`n"
-    rules .= "сигнал = Установить сигнализацию на авто: /set_alarm.`r`n"
-    rules .= "мп = Ожидайте. О проведении Мероприятия уведомят в чате.`r`n"
-    rules .= "рвс | рвц | респ | rwc = Ожидайте. О проведении Респавна авто уведомят в чате.`r`n"
-    rules .= "шкаф = Переставить шкаф: /makestore | Открыть: /use.`r`n"
-    rules .= "продать биз = Продать бизнес игроку: /sellmybiz | Государству: /sellbiz.`r`n"
-    rules .= "собес = Посмотреть активные события в игре: /events.`r`n"
-    rules .= "удост = Показать свое удостоверение: /doc.`r`n"
-    rules .= "сня брон = Снять бронежилет: /armoff.`r`n"
-    rules .= "акс = Снять все надетые аксессуары: /reset | Надеть: /put_on.`r`n"
-    rules .= "акс {дом|биз} = Редактировать аксессуары дома/бизнеса: /pa_edit.`r`n"
-    rules .= "пожен | развод = Предложение руки и сердца: /wedding | Развестись: /divorce.`r`n"
-    rules .= "свадьб = Чтобы сыграть свадьбу, необходимо купить обручальные кольца в магазине аксессуаров.`r`n"
-    rules .= "бой = Вызвать на бой другого игрока в спорт.зале: /fight.`r`n"
-    rules .= "выкл телеф = Включить/Выключить телефон: /togphone.`r`n"
-    rules .= "ч с {фрак|орг} = Добавить в черный список организации: /blist.`r`n"
-    rules .= "ч с телеф = Добавить номер в черный список: /phone_black.`r`n"
-    rules .= "наказ = Посмотреть список наказаний: /alist | Если посадили в КПЗ/ФСИН: Радиальное меню(R) - другое - личное дело.`r`n"
-    rules .= "перев = Мы не переворачиваем авто. Используйте: /c 090, помощь друга (R - транспорт - перевернуть авто), домкрат.`r`n"
-    rules .= "бумбокс = Поставить бумбокс: /boombox_put | Поднять: /boombox_pick.`r`n"
-    rules .= "нарко = Продать наркотики: /selldrugs.`r`n"
-    rules .= "прод оруж = Продажа/Передача оружия производится через обмен. R - Персонаж - Обмен предметами.`r`n"
-    rules .= "тайм капт = Убрать таймер капта - /capture_timer.`r`n"
-    rules .= "капт биз = Провести войну за бизнес - /capture_biz.`r`n"
-    rules .= "наград = Посмотреть награды: /mn - Награды | Забрать отыграный промокод: /plist.`r`n"
-    rules .= "поворот голов = Включить/Выключить движение головы: /headmove.`r`n"
-    rules .= "подселить = Подселить человека - /live.`r`n"
-    rules .= "выписат = Выписаться из совместного проживания - /liveout.`r`n"
+    rules .= "# Исключения: !слово — правило не сработает, если это слово есть в репорте. Пример: {мат|оск} !родн = ответ (на «оск родни» не реагирует).`r`n"
+    rules .= "# Исключение относится к своему варианту: в «мат | оск !родн» оно действует только на «оск». Чтобы на все — группа: {мат|оск} !родн.`r`n"
+    rules .= ""
     return rules
 }
 
@@ -3870,6 +4883,146 @@ LoadAnswerRules() {
     return true
 }
 
+; === DefaultPunishWordsText: слова МАТ/ОСК и наказания для первого запуска ===
+DefaultPunishWordsText() {
+    t := ""
+    t .= "# ViMeLlY Script: слова, по которым в репортах появляется подсказка МАТ или ОСК, и наказания к ним.`r`n"
+    t .= "# UTF-8. Файл можно править на лету: скрипт перечитает его сам. Не удаляйте сам файл.`r`n"
+    t .= "#`r`n"
+    t .= "# Раздел: [ОСК] или [МАТ], после него — наказание по умолчанию для всех строк раздела (время и причина для /rmute).`r`n"
+    t .= "# Разделов может быть несколько, например второй [ОСК] с другим наказанием для особых слов.`r`n"
+    t .= "# Если наказание начинается с команды (/jail 120 Причина), оно выдаётся этой командой вместо /rmute.`r`n"
+    t .= "#`r`n"
+    t .= "# Строка: слова [= особое наказание только для этой строки].`r`n"
+    t .= "#   слово — начало слова в репорте; *слово — искать внутри слова (так заданы корни мата);`r`n"
+    t .= "#   !слово — исключение: строка не сработает, если это слово есть в репорте;`r`n"
+    t .= "#   несколько слов через пробел — должны встретиться все; | — варианты; {а|б} — общая часть.`r`n"
+    t .= "#   Пример с исключениями и своим наказанием: оск !родн !мам = 240 Оскорбление`r`n"
+    t .= "#`r`n"
+    t .= "# ОСК проверяется раньше МАТ. Из нескольких подошедших строк берётся самая точная`r`n"
+    t .= "# (больше слов, длиннее слова), при равенстве — та, что выше в файле.`r`n"
+    t .= "`r`n"
+    t .= "[ОСК] 360 Оскорбление администрации.`r`n"
+    t .= "даун | пидор | пидар | шлюх | *ебла | *ебал | кончен | рот *ебал | *ебан | нищи | пош нах | лох | дебил | дура`r`n"
+    t .= "`r`n"
+    t .= "[МАТ] 120 Мат в /report.`r`n"
+    t .= "*блят | *сук | *ебат | *ебал | *ебла | *хуй | *пизд | *пидо | *бляд | *долб | *заеб | *неху | *схуя | *наеб | *ахуе | *охуе | *поху | *хуе`r`n"
+    return t
+}
+
+
+; === EnsurePunishWordsFile: создаёт punish-words.txt со встроенным списком, если файла нет (существующий не трогает) ===
+EnsurePunishWordsFile() {
+    global scriptDir, punishWordsFile
+    if (FileExist(punishWordsFile))
+        return true
+    if (!FileExist(scriptDir)) {
+        FileCreateDir, %scriptDir%
+        if (ErrorLevel)
+            return false
+    }
+    text := DefaultPunishWordsText()
+    tempPath := punishWordsFile . ".tmp." . A_TickCount
+    FileDelete, %tempPath%
+    FileAppend, %text%, %tempPath%, UTF-8
+    if (ErrorLevel) {
+        FileDelete, %tempPath%
+        return false
+    }
+    FileMove, %tempPath%, %punishWordsFile%, 0
+    if (ErrorLevel)
+        FileDelete, %tempPath%
+    return FileExist(punishWordsFile) ? true : false
+}
+
+
+; === ParsePunishWords: текст файла -> список записей {kind: МАТ|ОСК, key, punish} ===
+; Строки до первого раздела игнорируются. Неизвестный заголовок [...] отключает строки до следующего корректного раздела.
+; Наказание строки = то, что после «=»; без него — наказание раздела; без него — встроенное для типа.
+ParsePunishWords(content) {
+    list := []
+    section := ""
+    sectionPunish := ""
+    Loop, Parse, content, `n, `r
+    {
+        line := LTrim(Trim(A_LoopField, " `t"), Chr(0xFEFF))
+        if (line = "" || SubStr(line, 1, 1) = "#" || SubStr(line, 1, 1) = ";")
+            continue
+        if (RegExMatch(line, "^\[([^\]]+)\]\s*(.*)$", h)) {
+            head := Trim(h1)
+            StringUpper, head, head
+            section := (head = "МАТ" || head = "ОСК") ? head : ""
+            sectionPunish := Trim(h2)
+            continue
+        }
+        if (section = "")
+            continue
+        separator := InStr(line, "=")
+        keys := separator ? Trim(SubStr(line, 1, separator - 1)) : line
+        punish := separator ? Trim(SubStr(line, separator + 1)) : ""
+        if (punish = "")
+            punish := sectionPunish
+        if (punish = "")
+            punish := (section = "МАТ") ? "120 Мат в /report." : "360 Оскорбление администрации."
+        if (keys = "")
+            continue
+        for _, alt in AnswerExpandKey(keys)
+            list.Push({kind: section, key: alt, punish: punish})
+    }
+    return list
+}
+
+
+; === LoadPunishWords: читает punish-words.txt (при отсутствии создаёт). Если файл создать нельзя — работает встроенный список ===
+LoadPunishWords() {
+    global punishWordsList, punishWordsFile, punishWordsLoaded, punishWordsMTime
+    if (!EnsurePunishWordsFile()) {
+        punishWordsList := ParsePunishWords(DefaultPunishWordsText())
+        punishWordsLoaded := true
+        return false
+    }
+    FileRead, content, *P65001 %punishWordsFile%
+    if (ErrorLevel)
+        return false
+    punishWordsList := ParsePunishWords(content)
+    FileGetTime, punishWordsMTime, %punishWordsFile%, M
+    punishWordsLoaded := true
+    return true
+}
+
+
+; === PunishWordsMatch: подбор наказания по тексту репорта ===
+; ОСК проверяется раньше МАТ; внутри типа побеждает самая точная строка (AnswerMatch), при равенстве — первая в файле.
+; Возврат: {kind: "ОСК"|"МАТ", punish: текст наказания} или "" — если ничего не подошло.
+PunishWordsMatch(prep) {
+    global punishWordsList
+    for _, kind in ["ОСК", "МАТ"] {
+        bestScore := 0
+        best := ""
+        for _, entry in punishWordsList {
+            if (entry.kind != kind)
+                continue
+            score := AnswerMatch(entry.key, prep)
+            if (score > bestScore) {
+                bestScore := score
+                best := entry
+            }
+        }
+        if (IsObject(best))
+            return {kind: kind, punish: best.punish}
+    }
+    return ""
+}
+
+
+; === PunishSplitCommand: наказание -> команда и аргументы. «360 Причина» -> /rmute; «/jail 120 Причина» -> /jail ===
+PunishSplitCommand(text) {
+    if (RegExMatch(text, "^(/\w+)(?:\s+(.*))?$", m))
+        return {cmd: m1, args: m2}
+    return {cmd: "/rmute", args: text}
+}
+
+
 punishHelper() {
     global punishHelperStatus, punishFile, punishMap
     static initialized := false
@@ -3925,6 +5078,86 @@ PunishReadConfig(path) {
     return newMap
 }
 
+; === PunishConfirm: плашка подтверждения выдачи наказаний ===
+; Показывает плашку и ждёт: Enter — подтвердить, Esc — отмена. Отмена и по таймеру (ms), и если игра потеряла фокус.
+; Пока плашка на экране, Enter/Esc не передаются игре. Нажатия в первые 0.35 с и пока Enter/Space ещё зажаты игнорируются,
+; чтобы не подтвердить случайным повтором Enter после ввода ID. Плашка показывается и при выключенных подсказках.
+; Возврат: true — подтверждено (или подтверждение выключено в настройках), false — отменено.
+PunishConfirm(title, body, action, ms := 15000, accent := "FF9F43") {
+    global punishConfirmEnabled, punishConfirmState, punishConfirmArmed, ntfList
+    if (!punishConfirmEnabled)
+        return true
+    if (punishConfirmState != "")
+        return false
+    punishConfirmState := "wait"
+    punishConfirmArmed := false
+
+    wasCrit := A_IsCritical
+    Critical, On
+    item := NtfBuild(40, 380, title, body, action, "Enter — выдать   ·   Esc — отмена", accent, true)
+    item.num := 40
+    item.tag := "PunishConfirm"
+    item.until := A_TickCount + ms + 5000
+    item.shown := false
+    ntfList.Push(item)
+    NtfLayout()
+    SetTimer, NtfTick, 100
+    Critical, % wasCrit ? "On" : "Off"
+
+    start := A_TickCount
+    result := false
+    Loop {
+        if (punishConfirmState = "yes") {
+            result := true
+            break
+        }
+        if (punishConfirmState = "no")
+            break
+        elapsed := A_TickCount - start
+        if (elapsed >= ms || !WinActive("ahk_exe gta_sa.exe"))
+            break
+        if (!punishConfirmArmed && elapsed >= 350 && !GetKeyState("Enter", "P") && !GetKeyState("NumpadEnter", "P") && !GetKeyState("Space", "P"))
+            punishConfirmArmed := true
+        pct := 100 - (elapsed * 100) // ms
+        GuiControl, 40:, NtfBar40, %pct%
+        Sleep, 25
+    }
+
+    punishConfirmState := ""
+    punishConfirmArmed := false
+    Critical, On
+    i := ntfList.Length()
+    while (i >= 1) {
+        if (ntfList[i].tag = "PunishConfirm")
+            ntfList.RemoveAt(i)
+        i--
+    }
+    Gui, 40:Destroy
+    NtfLayout()
+    Critical, % wasCrit ? "On" : "Off"
+    return result
+}
+
+
+; === PunishConfirmPress: обработка Enter (yes) и Esc (no) на время подтверждения ===
+; Возврат: true — клавиша поглощена подтверждением и в игру не передаётся.
+PunishConfirmPress(choice) {
+    global punishConfirmState, punishConfirmArmed
+    if (punishConfirmState != "wait")
+        return false
+    if (punishConfirmArmed)
+        punishConfirmState := choice
+    return true
+}
+
+
+; === PunishConfirmBtnText: текст кнопки подтверждения в настройках ===
+PunishConfirmBtnText() {
+    global punishConfirmEnabled
+    return "🛡 Подтверждение наказаний: " . (punishConfirmEnabled ? "✔ Включено" : "✘ Выключено")
+}
+
+
 DynamicPunish(cmdKey) {
     SendInput, %cmdKey%{Space}
     Input, playerId, V I M, {Enter}{Space}
@@ -3938,46 +5171,49 @@ DynamicPunish(cmdKey) {
 }
 
 HandlePunishment(cmdKey, playerId) {
-    LineNumber := 0
+    global requestCanRecall
+    playerName := "", playerDetectId := "", playerLvl := "", maskName := ""
     SendInput, ^a {BackSpace}{Enter}
     Sleep, 70
     requestCanRecall := false
+    ; Читаем только строки, появившиеся ПОСЛЕ отправки /id: старые ответы /id (другой игрок с тем же ID) не учитываются.
+    ChatlogWatchFromNow("punish")
     SendInput, {F6}/id %playerId%{Enter}
-    Sleep, 430
-    Loop, Read, %filePath%
-    {
-        LineNumber++
-        
-        if (LineNumber <= punishHelperLastLine) {
-            continue
-        } if RegExMatch(A_LoopReadLine, "(\w+_\w+), ID: (\d+), уровень: (\d+)", m) {
-            if (m2 == playerId) {
-                playerName := m1
-                playerDetectId := m2
-                playerLvl := m3
-            } else {
-                playerName := m1
-                playerDetectId := m2
+    Sleep, 250
+    deadline := A_TickCount + 1500
+    while (playerLvl = "" && A_TickCount < deadline) {
+        for _, line in ChatlogReadNew("punish") {
+            ; Обычный ник:  Nick_Name[143], ID: 143, уровень: 44, ...
+            ; В маске:      Mask_809883[143] (реальное имя: Max_Gossnik), ID: 143, уровень: 44, ...
+            if !RegExMatch(line, "(\w+)(?:\[\d+\])?(?:\s*\([^:)]*:\s*(\w+)\))?,\s*ID:\s*(\d+),\s*[^:,]+:\s*(\d+)", m)
+                continue
+            if ((m3 + 0) != (playerId + 0)) {
+                playerDetectId := m3
+                continue
             }
-        } if RegExMatch(A_LoopReadLine, "(\w+_\w+)(?:\[(\d+)\]?), ID: (\d+), уровень: (\d+)", m) {
-            if (m3 == playerId) {
-                playerName := m1
-                playerDetectId := m3
-                playerLvl := m4
+            playerDetectId := m3
+            playerLvl := m4
+            if (m2 != "") {
+                maskName := m1
+                playerName := m2
             } else {
                 playerName := m1
-                playerDetectId := m3
             }
         }
-
-        punishHelperLastLine := LineNumber
-    } if (playerLvl != "") {
+        if (playerLvl = "")
+            Sleep, 100
+    }
+    if (maskName != "")
+        playerName := playerName . " (маска " . maskName . ")"
+    if (playerLvl != "") {
         fullCmd := punishMap[cmdKey]
         RegExMatch(fullCmd, "^(\/\w+)\s+(\d+)?\s*(.+)?", p)
         cmd := p1
         duration := p2
         reason := p3
-        
+        origCmd := cmd
+        origDuration := duration
+
         if (playerLvl <= 5 && cmd = "/ban") {
             cmd := "/warn"
             duration := ""
@@ -3993,6 +5229,15 @@ HandlePunishment(cmdKey, playerId) {
             ToolTip("[PUNISH] Ошибка кодировки причины. Проверьте punish.txt.", 4500)
             return
         }
+        ; Подтверждение: показывается итоговая команда (уже с поправкой на уровень игрока).
+        confirmNote := (cmd != origCmd || duration != origDuration) ? "   ·   смягчено: уровень ≤ 5" : ""
+        if (maskName != "")
+            confirmNote .= "   ·   игрок в маске"
+        confirmCmd := Trim(cmd . " " . playerId . " " . duration . " " . reason)
+        if (!PunishConfirm("НАКАЗАНИЕ  ·  " . playerName . "[" . playerId . "]", "Уровень игрока: " . playerLvl . confirmNote, "➜  " . confirmCmd)) {
+            ToolTip("[PUNISH] Выдача отменена, наказание не отправлено.", 2500)
+            return
+        }
         SendMessage, 0x50,, 0x4190419,, A
         ToolTip("[𝐒𝐂𝐑𝐈𝐏𝐓] Игрок " . playerName . "[" . playerId . "] определён. Уровень: " . playerLvl . ".`n↪︎ Выдаю: " . cmd . " " . playerId . " " . duration . " " . reason, 2332)
         ; SendEvent имитирует клавиши под RU-раскладкой; для GTA это
@@ -4005,7 +5250,7 @@ HandlePunishment(cmdKey, playerId) {
         Sleep, 80
         SendEvent, {Enter}
     } else {
-        ToolTip("[𝐒𝐂𝐑𝐈𝐏𝐓] Введенный ID: " . playerId . ". Определенный игрок: " . playerName . "[" . playerDetectId . "]`n↪︎ Выдача наказания приостановлена.", 2332)
+        ToolTip("[𝐒𝐂𝐑𝐈𝐏𝐓] Введенный ID: " . playerId . ". " . (playerDetectId != "" ? "В ответе /id другой ID: " . playerDetectId . "." : "Игрок в ответе /id не найден.") . "`n↪︎ Выдача наказания приостановлена.", 2332)
     }
 }
 
@@ -4283,6 +5528,24 @@ IssueReadFile() {
 }
 
 
+; === AutoIssueConfirm: плашка подтверждения перед автовыдачей (одна на весь список; первые 5 команд + сколько ещё) ===
+AutoIssueConfirm(items) {
+    total := items.Length()
+    shown := total < 5 ? total : 5
+    body := ""
+    Loop, %shown%
+    {
+        line := items[A_Index].line
+        if (StrLen(line) > 58)
+            line := SubStr(line, 1, 58) . "…"
+        body .= (A_Index > 1 ? "`n" : "") . line
+    }
+    if (total > shown)
+        body .= "`n…и ещё " . (total - shown)
+    return PunishConfirm("АВТОВЫДАЧА  ·  наказаний: " . total, body, "➜  Выдавать по очереди с паузами. Остановить — клавиша «Автовыдача».", 30000, "FF5C5C")
+}
+
+
 ; === AutoIssueRun: автовыдача наказаний из auto-issue.txt ===
 AutoIssueRun() {
     if (scriptMode != "Admin" || issueRunning || !WinActive("ahk_exe gta_sa.exe"))
@@ -4307,6 +5570,13 @@ AutoIssueRun() {
             continue
         }
         items.Push({idx: fileLines.MaxIndex(), line: t, type: m1, nick: m2, time: m3, reason: m4})
+    }
+
+    ; Подтверждение всего списка перед началом: при отмене ничего не отправляется и файл не меняется.
+    if (items.Length() > 0 && !AutoIssueConfirm(items)) {
+        ToolTip("[𝐀𝐔𝐓𝐎-𝐈𝐒𝐒𝐔𝐄] Выдача отменена, список не изменён.", 3000)
+        issueRunning := false
+        return
     }
 
     total := items.Length(), doneCount := 0, okCount := 0, bannedCount := 0
@@ -4441,8 +5711,8 @@ CatchingAnOrder() {
         return
     isEven := (Mod(A_Min, 2) = 0)
     if ((!isEven && A_Sec >= minutesOfCatching1) || (isEven && A_Sec < minutesOfCatching2)) {
-        ; Таймер работает часто, но отправляем не чаще раза в 5 секунд.
-        if (lastBizlistAttempt && (A_TickCount - lastBizlistAttempt) < 5000)
+        ; Таймер работает часто, но отправляем не чаще раза в 1 секунду.
+        if (lastBizlistAttempt && (A_TickCount - lastBizlistAttempt) < 1000)
             return
         lastBizlistAttempt := A_TickCount
         if (isHumanInput) {
@@ -4521,7 +5791,6 @@ IsNewTruckerOrderMessage(line) {
 ExpectationOfProfit() {
     global onOrder, autoBizlistActive
     
-    ; Экономика также обрабатывает только новые полные строки после запуска.
     for _, line in ChatlogReadNew("profit") {
         if (InStr(line, "Вы продали")) {
             if (RegExMatch(line, "\{FFFFFF\}""(.*?)"" .*?\{FFFFFF\}(\d+) .*?\{FFFFFF\}(\d+)", match)) {
@@ -4551,7 +5820,6 @@ ExpectationOfProfit() {
             if (!matchedDelivery)
                 continue
 
-            ; После подтвержденной доставки можно ловить следующий заказ.
             onOrder := false
             FormatTime, CurrentTime,, dd.MM.yyyy HH:mm:ss
             LogString := CurrentTime . ", " . earnings . " руб, " . """Доставка продуктов, " . shopName . ": " . itemCount . " ед.""`n"
@@ -4576,9 +5844,6 @@ ExpectationOfProfit() {
                 SendInput, {BS 128}{Esc}
                 ChatIsOpen := false
             }
-
-            ; Загрузка и ввод количества выполняются игрой автоматически.
-            ; Никаких дополнительных /bizlist, цифр или RShift после принятия заказа.
         }
     }
 }
@@ -4620,30 +5885,26 @@ Return
 return
 
 Enter::
+    ; Плашка подтверждения наказания поглощает Enter (выдать).
+    if (PunishConfirmPress("yes"))
+        return
     ; Пока меню открыто, Enter выполняет выбранную кнопку и не передаётся игре.
     if (MenuKeyboardEnabled()) {
         MenuActivateSelected()
         return
     }
-    ; В обычном режиме сохраняем исходное поведение игрового Enter.
-    if (ChatIsOpen && !requestBusy)
+    ; Любой Enter в игре мог отправить в чат что-то своё (в том числе когда признак ChatIsOpen не поймал открытие чата):
+    ; повтор /z через ↑ после этого запрещён, иначе автозапрос подставил бы и изменил чужую команду.
+    if (!requestBusy)
         requestCanRecall := false
     ChatIsOpen := false
     SendInput, {Enter}
 return
 
-NumpadEnter::
-    if (MenuKeyboardEnabled()) {
-        MenuActivateSelected()
-        return
-    }
-    if (ChatIsOpen && !requestBusy)
-        requestCanRecall := false
-    ChatIsOpen := false
-    SendInput, {NumpadEnter}
-return
-
 Escape::
+    ; Плашка подтверждения наказания поглощает Esc (отмена): в игру он не уходит и pause menu не открывается.
+    if (PunishConfirmPress("no"))
+        return
     ; Esc закрывает меню/возвращает назад, иначе передаётся игре.
     if (MenuKeyboardEnabled()) {
         MenuKeyboardEscape()
@@ -4666,4 +5927,5 @@ Tab::MenuNavigate(1)
 Enter::MenuActivateSelected()
 NumpadEnter::MenuActivateSelected()
 Esc::MenuKeyboardEscape()
+F1::MenuHelpSelected()
 #If
