@@ -10,6 +10,8 @@ SetWorkingDir %A_ScriptDir%
 
 global version := "v 1.7.6"
 global LicenseURL := "aHR0cHM6Ly9naXN0LmdpdGh1YnVzZXJjb250ZW50LmNvbS9NYWtzaW00ZWtrL2Jl`nMmQ0MjE5MzE1NjFkZDAxYjQzM2Y5M2NhNTMyOWQwL3Jhdy9WaU1lTGxZLWtleXMu`ndHh0"
+; Соль хэша лицензии. Должна совпадать с солью в ViMeLlY_LicenseTool.ahk. После выхода версии с хэшами не менять.
+global LicenseSalt := "ViMeLlY-lic-v1"
 
 global repID, ansID, ansLogID
 global spReplyTarget := ""
@@ -239,12 +241,25 @@ checkLicenseKey() {
     }
     IsValid := false
     scriptType := ""
+    keyHash := LicenseHash(SavedKey, CurrentHWID)
     Loop, Parse, RawKeys, `n, `r
     {
         CurrentLine := Trim(A_LoopField)
         if (CurrentLine = "" || SubStr(CurrentLine, 1, 1) = "#")
             continue
         Parts := StrSplit(CurrentLine, [":", "="])
+        ; Запись «хэш:Тип»: ник и HWID в списке не хранятся, хэш считается от ключа и HWID этого компьютера.
+        ; Старые версии скрипта такие строки пропускают (в них меньше трёх частей).
+        if (Parts.Length() = 2 && RegExMatch(Trim(Parts[1]), "i)^[0-9a-f]{64}$")) {
+            hashType := Trim(Parts[2])
+            if (keyHash != "" && Trim(Parts[1]) = keyHash && (hashType == "Admin" || hashType == "Player")) {
+                IsValid := true
+                userNickname := LicenseNicknameB64(SavedKey)
+                scriptType := hashType
+                break
+            }
+            continue
+        }
         if (Parts.Length() < 3)
             continue
         candidate := Trim(Parts[1])
@@ -409,7 +424,6 @@ else { if (Test-Path -LiteralPath $Target) { Start-Process -FilePath $Target } }
     }
     ExitApp
 }
-
 
 ; ====================================================================================================================
 ; СЛУЖЕБНЫЕ ФУНКЦИИ
@@ -796,6 +810,52 @@ Base64Decode(str) {
     
     return StrGet(&buf, size, "UTF-8")
 }
+
+; === SHA256Hex: SHA-256 строки (UTF-8) в виде 64 hex-символов; пусто при ошибке CryptoAPI ===
+SHA256Hex(str) {
+    VarSetCapacity(bin, StrPut(str, "UTF-8"), 0)
+    len := StrPut(str, &bin, "UTF-8") - 1
+    hProv := 0
+    hHash := 0
+    result := ""
+    if (!DllCall("advapi32\CryptAcquireContextW", "Ptr*", hProv, "Ptr", 0, "Ptr", 0, "UInt", 24, "UInt", 0xF0000000, "Int"))
+        return ""
+    if (DllCall("advapi32\CryptCreateHash", "Ptr", hProv, "UInt", 0x800C, "Ptr", 0, "UInt", 0, "Ptr*", hHash, "Int")) {
+        if (DllCall("advapi32\CryptHashData", "Ptr", hHash, "Ptr", &bin, "UInt", len, "UInt", 0, "Int")) {
+            size := 32
+            VarSetCapacity(hashBin, 32, 0)
+            if (DllCall("advapi32\CryptGetHashParam", "Ptr", hHash, "UInt", 2, "Ptr", &hashBin, "UInt*", size, "UInt", 0, "Int")) {
+                Loop, 32 {
+                    b := NumGet(hashBin, A_Index - 1, "UChar")
+                    result .= SubStr("0123456789abcdef", (b >> 4) + 1, 1) . SubStr("0123456789abcdef", (b & 15) + 1, 1)
+                }
+            }
+        }
+        DllCall("advapi32\CryptDestroyHash", "Ptr", hHash)
+    }
+    DllCall("advapi32\CryptReleaseContext", "Ptr", hProv, "UInt", 0)
+    return result
+}
+
+; === LicenseHash: хэш записи лицензии = SHA-256(соль | ключ в нижнем регистре | HWID) ===
+LicenseHash(key, hwid) {
+    global LicenseSalt
+    k := Trim(key)
+    StringLower, k, k
+    return SHA256Hex(LicenseSalt . "|" . k . "|" . Trim(hwid))
+}
+
+; === LicenseNicknameB64: ник в Base64 для статистики и сравнения с чатом ===
+; Если в настройках уже сохранён ник (тот же, с точностью до регистра), берётся он: имя секции статистики не меняется.
+LicenseNicknameB64(key) {
+    global settingsFile
+    IniRead, stored, %settingsFile%, Preset, userNickname, %A_Space%
+    stored := Trim(stored)
+    if (stored != "" && stored != "ERROR" && Base64Decode(stored) = key)
+        return stored
+    return Trim(Base64Encode(key), " `t`r`n")
+}
+
 
 Join(delim, arr*) {
     out := ""
