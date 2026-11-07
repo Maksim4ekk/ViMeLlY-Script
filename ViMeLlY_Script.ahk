@@ -10,7 +10,6 @@ SetWorkingDir %A_ScriptDir%
 
 global version := "v 1.7.6"
 global LicenseURL := "aHR0cHM6Ly9naXN0LmdpdGh1YnVzZXJjb250ZW50LmNvbS9NYWtzaW00ZWtrL2Jl`nMmQ0MjE5MzE1NjFkZDAxYjQzM2Y5M2NhNTMyOWQwL3Jhdy9WaU1lTGxZLWtleXMu`ndHh0"
-; Соль хэша лицензии. Должна совпадать с солью в ViMeLlY_LicenseTool.ahk. После выхода версии с хэшами не менять.
 global LicenseSalt := "ViMeLlY-lic-v1"
 
 global repID, ansID, ansLogID
@@ -811,7 +810,6 @@ Base64Decode(str) {
     return StrGet(&buf, size, "UTF-8")
 }
 
-; === SHA256Hex: SHA-256 строки (UTF-8) в виде 64 hex-символов; пусто при ошибке CryptoAPI ===
 SHA256Hex(str) {
     VarSetCapacity(bin, StrPut(str, "UTF-8"), 0)
     len := StrPut(str, &bin, "UTF-8") - 1
@@ -837,7 +835,6 @@ SHA256Hex(str) {
     return result
 }
 
-; === LicenseHash: хэш записи лицензии = SHA-256(соль | ключ в нижнем регистре | HWID) ===
 LicenseHash(key, hwid) {
     global LicenseSalt
     k := Trim(key)
@@ -845,8 +842,6 @@ LicenseHash(key, hwid) {
     return SHA256Hex(LicenseSalt . "|" . k . "|" . Trim(hwid))
 }
 
-; === LicenseNicknameB64: ник в Base64 для статистики и сравнения с чатом ===
-; Если в настройках уже сохранён ник (тот же, с точностью до регистра), берётся он: имя секции статистики не меняется.
 LicenseNicknameB64(key) {
     global settingsFile
     IniRead, stored, %settingsFile%, Preset, userNickname, %A_Space%
