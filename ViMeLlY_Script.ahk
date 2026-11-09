@@ -3683,45 +3683,45 @@ ClearAnswers:
 Return
 
 Setup1:
-    SetPreset("Медленно", 650, 210, 350)
+    SetPreset("Медленно", 200, 70, 120)
     
     IniWrite, Медленно, %settingsFile%, Preset, currentSetup
-    IniWrite, 650, %settingsFile%, Preset, Delay1
-    IniWrite, 210, %settingsFile%, Preset, Delay2
-    IniWrite, 350, %settingsFile%, Preset, Delay3
+    IniWrite, 200, %settingsFile%, Preset, Delay1
+    IniWrite, 70, %settingsFile%, Preset, Delay2
+    IniWrite, 120, %settingsFile%, Preset, Delay3
     
     Gosub, ScriptSettings
 Return
 
 Setup2:
-    SetPreset("Среднее", 520, 170, 270)
+    SetPreset("Среднее", 170, 163, 100)
     
     IniWrite, Среднее, %settingsFile%, Preset, currentSetup
-    IniWrite, 520, %settingsFile%, Preset, Delay1
-    IniWrite, 170, %settingsFile%, Preset, Delay2
-    IniWrite, 270, %settingsFile%, Preset, Delay3
+    IniWrite, 170, %settingsFile%, Preset, Delay1
+    IniWrite, 63, %settingsFile%, Preset, Delay2
+    IniWrite, 100, %settingsFile%, Preset, Delay3
     
     Gosub, ScriptSettings
 Return
 
 Setup3:
-    SetPreset("Быстро", 400, 125, 205)
+    SetPreset("Быстро", 135, 55, 83)
     
     IniWrite, Быстро, %settingsFile%, Preset, currentSetup
-    IniWrite, 400, %settingsFile%, Preset, Delay1
-    IniWrite, 125, %settingsFile%, Preset, Delay2
-    IniWrite, 205, %settingsFile%, Preset, Delay3
+    IniWrite, 135, %settingsFile%, Preset, Delay1
+    IniWrite, 55, %settingsFile%, Preset, Delay2
+    IniWrite, 83, %settingsFile%, Preset, Delay3
     
     Gosub, ScriptSettings
 Return
 
 Setup4:
-    SetPreset("Оч.быстро", 300, 95, 145)
+    SetPreset("Оч.быстро", 120, 50, 70)
     
     IniWrite, Оч.быстро, %settingsFile%, Preset, currentSetup
-    IniWrite, 300, %settingsFile%, Preset, Delay1
-    IniWrite, 95, %settingsFile%, Preset, Delay2
-    IniWrite, 145, %settingsFile%, Preset, Delay3
+    IniWrite, 120, %settingsFile%, Preset, Delay1
+    IniWrite, 50, %settingsFile%, Preset, Delay2
+    IniWrite, 70, %settingsFile%, Preset, Delay3
     
     Gosub, ScriptSettings
 Return
